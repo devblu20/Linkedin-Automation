@@ -1,0 +1,115 @@
+version: 2
+name: bluqq-london-prop-family-offices
+search:
+  titles:
+    include:
+      - Founder
+      - Co-Founder
+      - Chief Executive Officer
+      - CEO
+      - Chief Executive
+      - Managing Partner
+      - Chief Investment Officer
+      - CIO
+      - Principal
+      - Partner
+      - Managing Director
+      - Head of Trading
+      - Head of Proprietary Trading
+      - Head of Investments
+      - Head of Investment
+      - Investment Director
+      - Portfolio Manager
+      - Fund Manager
+      - Chief Operating Officer
+      - COO
+      - Chief Technology Officer
+      - CTO
+      - Quantitative Trading Lead
+      - Quant Trading Lead
+      - Trading Director
+      - Director of Trading
+    exclude:
+      - Assistant
+      - Intern
+      - Student
+      - Recruiter
+  locations:
+    - London
+    - Greater London
+  industries:
+    - Investment Management
+    - Financial Services
+    - Capital Markets
+  companies: []
+  keywords:
+    include:
+      - proprietary trading
+      - prop trading
+      - family office
+      - small fund
+      - options
+      - derivatives
+      - multi-account
+      - Interactive Brokers
+    exclude:
+      - recruitment
+      - training course
+  required_dimensions:
+    - titles
+    - locations
+limits:
+  max_results: 250
+  max_pages: 24
+  max_daily_results: 500
+qualification:
+  firm_types:
+    - proprietary trading
+    - prop trading
+    - family office
+    - small fund
+  minimum_funds_gbp: 1000000
+  require_fund_evidence: true
+  executive_title_priority:
+    - Founder
+    - Co-Founder
+    - Chief Executive Officer
+    - CEO
+    - Chief Executive
+    - Managing Partner
+    - Chief Investment Officer
+    - CIO
+    - Principal
+    - Partner
+    - Managing Director
+    - Head of Trading
+    - Head of Proprietary Trading
+    - Head of Investments
+    - Head of Investment
+    - Investment Director
+    - Portfolio Manager
+    - Fund Manager
+    - Chief Operating Officer
+    - COO
+    - Chief Technology Officer
+    - CTO
+    - Quantitative Trading Lead
+    - Quant Trading Lead
+    - Trading Director
+    - Director of Trading
+  minimum_score: 70
+outreach:
+  enabled: true
+  manual_send_only: true
+  connection_template: >-
+    Hi {first_name}, I am Devansh, founder of BluQQ. We build owned trading automation and AI
+    infrastructure for family offices and small funds. Your work at {company} stood out - open to
+    connecting?
+  message_template: >-
+    Thanks for connecting, {first_name}. BluQQ builds software for multi-account options
+    automation, risk controls, AI research, reporting, and private deployment. Clients retain full
+    ownership and control; we provide no custody, discretion, or investment advice. If relevant to
+    {company}, I would be glad to share the architecture and a short demo.
+output:
+  file_name: bluqq-london-prop-family-offices.xlsx
+  drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID

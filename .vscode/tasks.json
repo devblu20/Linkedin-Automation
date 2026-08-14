@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {"label": "Create venv", "type": "shell", "command": "python -m venv .venv"},
+    {"label": "Install dependencies", "type": "shell", "command": ".venv\\Scripts\\python.exe -m pip install -e \".[dev]\""},
+    {"label": "Install Chromium", "type": "shell", "command": ".venv\\Scripts\\python.exe -m playwright install chromium"},
+    {"label": "Migrate database", "type": "shell", "command": ".venv\\Scripts\\python.exe -m alembic upgrade head"},
+    {"label": "Test", "type": "shell", "command": ".venv\\Scripts\\python.exe -m pytest", "group": "test"},
+    {"label": "Quality", "type": "shell", "command": ".venv\\Scripts\\python.exe -m ruff check . && .venv\\Scripts\\python.exe -m mypy"}
+  ]
+}

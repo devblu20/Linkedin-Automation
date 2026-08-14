@@ -1,0 +1,45 @@
+version: 2
+name: bluqq-london-independent-traders
+search:
+  titles:
+    include: [Founder, Co-Founder, Owner, Independent Trader, Proprietary Trader, Portfolio Manager]
+    exclude: [Recruiter, Recruitment Consultant, Student, Intern, Graduate]
+  locations: [London, Greater London, Greater London Area]
+  industries: [Financial Services, Capital Markets, Investment Management]
+  companies: []
+  keywords:
+    include: [trading, proprietary trading, quant trading, hedge fund, options trading,
+      algo trading, retail trading, futures trading, day trading, portfolio management,
+      self-employed, independent, solo founder, sole trader]
+    exclude: [recruitment, student, internship, investment banking, global asset management]
+  required_dimensions: [locations, keywords]
+limits:
+  max_results: 100
+  max_pages: 10
+  max_daily_results: 150
+  max_daily_connections: 20
+  max_daily_messages: 20
+qualification:
+  firm_types: [independent trader, proprietary trading, prop trading, small fund, hedge fund]
+  minimum_funds_gbp: 1
+  require_fund_evidence: false
+  company_size_min: 1
+  company_size_max: 100
+  prefer_self_employed: true
+  self_employment_keywords: [self-employed, independent, solo founder, sole trader, owner]
+  executive_title_priority: [Founder, Co-Founder, Owner, Independent Trader,
+    Proprietary Trader, Portfolio Manager]
+  minimum_score: 55
+outreach:
+  enabled: true
+  manual_send_only: true
+  connection_template: >-
+    Hi {first_name}, I noticed your independent trading work at {company}. BluQQ builds owned
+    trading automation and AI infrastructure for traders and small funds. Open to connecting?
+  message_template: >-
+    Thanks for connecting, {first_name}. Based on your work at {company}, BluQQ may be useful:
+    we build options strategy automation, multi-account execution, risk controls, reporting,
+    and private AI research layers. You retain ownership and control. Happy to share a short demo.
+output:
+  file_name: bluqq-london-independent-traders.xlsx
+  drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID

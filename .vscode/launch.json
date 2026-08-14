@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CLI: validate independent traders",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linkedin_automation",
+      "args": ["validate", "config/bluqq-london-independent-traders.yaml"],
+      "console": "integratedTerminal",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src"}
+    },
+    {
+      "name": "CLI: dry run",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linkedin_automation",
+      "args": ["run", "config/bluqq-london-independent-traders.yaml", "--dry-run"],
+      "console": "integratedTerminal",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src"}
+    },
+    {
+      "name": "Review dashboard",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "linkedin_automation",
+      "args": ["review", "${input:runId}"],
+      "console": "integratedTerminal",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src"}
+    }
+  ],
+  "inputs": [{"id": "runId", "type": "promptString", "description": "Research run UUID"}]
+}

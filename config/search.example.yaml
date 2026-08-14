@@ -1,0 +1,29 @@
+version: 1
+name: india-ai-engineering-leads
+search:
+  titles:
+    include:
+      - AI Engineer
+      - Machine Learning Engineer
+    exclude:
+      - Intern
+      - Student
+  locations:
+    - India
+  industries:
+    - Software Development
+    - IT Services
+  companies: []
+  keywords:
+    include:
+      - LLM
+      - generative AI
+    exclude:
+      - internship
+limits:
+  max_results: 100
+  max_pages: 10
+  max_daily_results: 250
+output:
+  file_name: india-ai-engineering-leads.xlsx
+  drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID
