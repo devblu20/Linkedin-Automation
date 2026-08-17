@@ -1,0 +1,78 @@
+version: 2
+name: bluqq-london-small-funds-trading-teams
+search:
+  titles:
+    include:
+      - Founder
+      - Managing Partner
+      - Chief Investment Officer
+      - CIO
+      - Fund Manager
+      - Portfolio Manager
+      - Head of Trading
+      - Trading Director
+      - Chief Operating Officer
+      - COO
+      - Chief Technology Officer
+      - CTO
+      - Quantitative Trading Lead
+      - Trading Technology Lead
+    exclude: [Recruiter, Recruitment Consultant, Student, Intern, Graduate]
+  locations: [London, Greater London, Greater London Area]
+  industries: [Investment Management, Financial Services, Capital Markets]
+  companies: []
+  keywords:
+    include:
+      - small fund
+      - emerging fund
+      - hedge fund
+      - proprietary trading
+      - systematic trading
+      - options trading
+      - derivatives
+      - quantitative trading
+      - Interactive Brokers
+    exclude: [recruitment, training course, student, internship]
+  required_dimensions: [titles, locations]
+limits:
+  max_results: 150
+  max_pages: 18
+  max_daily_results: 300
+  max_daily_connections: 20
+  max_daily_messages: 20
+qualification:
+  firm_types: [small fund, emerging fund, hedge fund, proprietary trading, trading team]
+  minimum_funds_gbp: 1
+  require_fund_evidence: false
+  company_size_min: 1
+  company_size_max: 100
+  prefer_self_employed: false
+  executive_title_priority:
+    - Founder
+    - Managing Partner
+    - Chief Investment Officer
+    - CIO
+    - Fund Manager
+    - Portfolio Manager
+    - Head of Trading
+    - Trading Director
+    - Chief Operating Officer
+    - COO
+    - Chief Technology Officer
+    - CTO
+  minimum_score: 60
+outreach:
+  enabled: true
+  manual_send_only: true
+  connection_template: >-
+    Hi {first_name}, I noticed your work at {company}. BluQQ builds client-owned options and
+    trading automation with execution, risk controls, and reporting for small funds and trading
+    teams. Open to connecting?
+  message_template: >-
+    Thanks for connecting, {first_name}. We help small funds convert manual trading workflows into
+    monitored software running on their own accounts and infrastructure: multi-account execution,
+    drawdown guards, dashboards, and AI research briefs. Every system is paper-validated before
+    rollout. Would a short architecture example be relevant to {company}?
+output:
+  file_name: bluqq-london-small-funds-trading-teams.xlsx
+  drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID

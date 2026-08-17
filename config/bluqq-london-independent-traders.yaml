@@ -34,12 +34,13 @@ outreach:
   enabled: true
   manual_send_only: true
   connection_template: >-
-    Hi {first_name}, I noticed your independent trading work at {company}. BluQQ builds owned
-    trading automation and AI infrastructure for traders and small funds. Open to connecting?
+    Hi {first_name}, I noticed your options or independent trading work at {company}. BluQQ builds
+    client-owned trading automation, risk controls, and reporting. Open to connecting?
   message_template: >-
-    Thanks for connecting, {first_name}. Based on your work at {company}, BluQQ may be useful:
-    we build options strategy automation, multi-account execution, risk controls, reporting,
-    and private AI research layers. You retain ownership and control. Happy to share a short demo.
+    Thanks for connecting, {first_name}. We help active traders codify options workflows into
+    disciplined software on their own accounts: entries, rolling and adjustment rules,
+    multi-account sizing, risk guards, and reporting. Everything is paper-validated first and you
+    retain the source code. Is any part of your current workflow still manual?
 output:
   file_name: bluqq-london-independent-traders.xlsx
   drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID

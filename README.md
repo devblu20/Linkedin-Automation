@@ -83,6 +83,20 @@ real Neon URL in a committed file.
 
 ## Commands
 
+Run the three focused BluQQ London campaigns separately so each segment receives relevant
+qualification and outreach drafts:
+
+```powershell
+linkedin-automation run config\bluqq-london-prop-family-offices.yaml
+linkedin-automation run config\bluqq-london-small-funds-trading-teams.yaml
+linkedin-automation run config\bluqq-london-independent-traders.yaml
+```
+
+Every fetched profile is stored in the configured database's `observations` table, including
+rejected candidates and rejection reasons. Qualified, canonicalized clients are stored in `leads`,
+and their editable human-reviewed drafts and lifecycle state are stored in `outreach_records`.
+Connection and message audit events are stored in `connection_requests` and `messages_sent`.
+
 Validate without creating runtime data:
 
 ```powershell
