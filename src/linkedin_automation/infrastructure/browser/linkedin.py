@@ -385,21 +385,22 @@ class PlaywrightLinkedInCollector:
                                 )
                         self._raise_for_safety_state(page.url, page.title(), html)
                         with suppress(PlaywrightTimeoutError):
-                            page.locator('[role="listitem"] a[href*="/in/"]').filter(
-                                has_text=re.compile(r"[•·]\s*(?:1st|2nd|3rd\+?)")
-                            ).first.wait_for(state="attached", timeout=min(self._timeout, 15_000))
+                            page.locator('a[href*="/in/"]').first.wait_for(
+                                state="attached", timeout=min(self._timeout, 15_000)
+                            )
                         html = page.content()
                         try:
-                            rendered_anchors = page.locator(
-                                '[role="listitem"] a[href*="/in/"]'
-                            ).evaluate_all(
+                            rendered_anchors = page.locator('a[href*="/in/"]').evaluate_all(
                                 "elements => elements.flatMap(element => {"
-                                "const text = element.innerText || ''; "
-                                "const hasDegree = "
-                                "/[•·]\\s*(?:1st|2nd|3rd\\+?)/.test(text); "
+                                "let card = element; "
+                                "for (let depth = 0; depth < 8 && card; depth += 1) {"
+                                "const text = card.innerText || ''; "
                                 "const lines = text.split(/\\n/).filter(line => line.trim()); "
-                                "return hasDegree && lines.length >= 3 "
-                                "? [{href: element.href, text}] : []; })"
+                                "if (lines.length >= 3 && text.length < 2000) "
+                                "return [{href: element.href, text}]; "
+                                "card = card.parentElement; "
+                                "} "
+                                "return []; })"
                             )
                         except PlaywrightError as error:
                             self._capture(page, step_number)
