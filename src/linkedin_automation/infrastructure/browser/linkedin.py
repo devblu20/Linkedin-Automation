@@ -342,6 +342,11 @@ class PlaywrightLinkedInCollector:
                                     page.wait_for_timeout(1_000)
                                     continue
                                 self._capture(page, step_number)
+                                if "closed" in str(error).casefold():
+                                    raise CollectionError(
+                                        "LinkedIn browser window was closed before collection "
+                                        "finished"
+                                    ) from error
                                 raise LayoutChangedError(
                                     "LinkedIn search navigation was interrupted"
                                 ) from error
@@ -468,8 +473,11 @@ class PlaywrightLinkedInCollector:
         path = self._screenshot_dir / f"linkedin-page-{page_number}.png"
         try:
             page.screenshot(path=str(path), full_page=True)  # type: ignore[attr-defined]
-        except PlaywrightTimeoutError:
-            logger.warning("linkedin_diagnostic_screenshot_failed", extra={"page": page_number})
+        except PlaywrightError as error:
+            logger.warning(
+                "linkedin_diagnostic_screenshot_failed",
+                extra={"page": page_number, "error_type": error.__class__.__name__},
+            )
 
     @staticmethod
     def _raise_for_safety_state(url: str, title: str, html: str) -> None:
