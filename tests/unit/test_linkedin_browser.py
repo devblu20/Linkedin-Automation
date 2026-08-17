@@ -21,7 +21,7 @@ def test_builds_bounded_people_search_url() -> None:
     assert url.startswith("https://www.linkedin.com/search/results/people/")
     assert "page=2" in url
     assert "LLM" in url
-    assert "network=%5B%22F%22%2C%22S%22%5D" in url
+    assert "network=" not in url
     assert "AI+Engineer" not in url
     assert "geoUrn=%5B%22102257491%22%5D" not in url
 
@@ -45,11 +45,11 @@ def test_plans_separate_round_robin_term_searches() -> None:
     steps = build_people_search_steps(definition)
     assert len(steps) == definition.limits.max_pages
     assert steps[:3] == [
-        ("proprietary trading", 1),
-        ("prop trading", 1),
         ("family office", 1),
+        ("private investment office", 1),
+        ("single family office", 1),
     ]
-    assert steps[8] == ("proprietary trading", 2)
+    assert steps[8] == ("family office", 2)
 
 
 def test_builds_single_term_search_url() -> None:

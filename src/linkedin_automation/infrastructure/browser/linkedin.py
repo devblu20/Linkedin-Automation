@@ -21,7 +21,6 @@ from linkedin_automation.application.exceptions import (
     AuthenticationRequiredError,
     CollectionError,
     LayoutChangedError,
-    LimitedVisibilityError,
     RateLimitedError,
     SecurityChallengeError,
 )
@@ -50,9 +49,6 @@ def build_people_search_url(
     keywords = search_term or _boolean_or_group(subject_terms)
     parameters: dict[str, str | int] = {
         "keywords": keywords,
-        # LinkedIn does not expose canonical profile URLs for locked out-of-network cards.
-        # Restrict collection to profiles this signed-in account is allowed to identify.
-        "network": '["F","S"]',
         "page": page,
         "origin": "FACETED_SEARCH",
     }
@@ -430,12 +426,13 @@ class PlaywrightLinkedInCollector:
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
                             if page.get_by_text("LinkedIn Member", exact=True).count():
-                                raise LimitedVisibilityError(
-                                    "LinkedIn hid profile names and URLs because the results are "
-                                    "outside this account's network; narrow the search to visible "
-                                    "1st/2nd-degree profiles or use authorized Sales Navigator "
-                                    "access"
+                                logger.info(
+                                    "linkedin_locked_results_skipped",
+                                    extra={"step": step_number, "source_url": source_url},
                                 )
+                                last_page = step_number
+                                time.sleep(random.uniform(self._min_delay, self._max_delay))
+                                continue
                             raise LayoutChangedError(
                                 "no recognizable people-search results were found; "
                                 "page layout may have changed"
