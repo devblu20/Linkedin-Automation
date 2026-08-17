@@ -2,14 +2,17 @@
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import make_url
 
 from linkedin_automation.infrastructure.persistence.repository import Base
 
 config = context.config
+load_dotenv(Path.cwd() / ".env", override=False)
 if migration_url := os.getenv("LINKEDIN_AUTOMATION_MIGRATION_URL"):
     if migration_url.startswith("postgresql://"):
         migration_url = migration_url.replace("postgresql://", "postgresql+psycopg://", 1)
