@@ -18,7 +18,7 @@ def test_persists_runs_and_deduplicates_leads(tmp_path: Path) -> None:
     repository.initialize()
     definition = YamlSearchDefinitionLoader().load(Path("config/search.example.yaml"))
     run = ResearchRun.create(
-        search_name=definition.name,
+        search_name=definition.name, 
         schema_version=1,
         definition_json=definition.model_dump_json(),
         definition_hash="a" * 64,
@@ -60,3 +60,4 @@ def test_persists_runs_and_deduplicates_leads(tmp_path: Path) -> None:
     inspection_engine.dispose()
     repository.close()
     reopened.close()
+  

@@ -18,8 +18,8 @@ from linkedin_automation.application.outbound import OutboundOutreach
 from linkedin_automation.application.outreach import OutreachReview
 from linkedin_automation.domain.enums import OutreachStatus
 from linkedin_automation.domain.services import LeadProcessingError
-from linkedin_automation.infrastructure.persistence import SqliteResearchRepository
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInOutreach
+from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.infrastructure.runtime import RuntimeSettings
 
 
@@ -44,9 +44,9 @@ class BatchAction(BaseModel):
     lead_ids: list[UUID] = Field(min_length=1, max_length=20)
 
 
-def create_review_app(database_path: Path, run_id: UUID) -> FastAPI:
+def create_review_app(database_url: str | Path, run_id: UUID) -> FastAPI:
     """Create a local-only review application for one immutable research run."""
-    repository = SqliteResearchRepository(database_path)
+    repository = DatabaseResearchRepository(database_url)
     repository.initialize()
     review = OutreachReview(repository)
     outbound = OutboundOutreach(

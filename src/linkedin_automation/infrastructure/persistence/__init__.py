@@ -1,5 +1,8 @@
-"""SQLite persistence adapter."""
+"""SQLite and PostgreSQL persistence adapters."""
 
-from linkedin_automation.infrastructure.persistence.repository import SqliteResearchRepository
+from linkedin_automation.infrastructure.persistence.repository import (
+    DatabaseResearchRepository,
+    SqliteResearchRepository,
+)
 
-__all__ = ["SqliteResearchRepository"]
+__all__ = ["DatabaseResearchRepository", "SqliteResearchRepository"]

@@ -1,7 +1,6 @@
 """Persistence boundaries for runs, observations, and normalized leads."""
 
 from datetime import datetime
-from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
@@ -56,4 +55,4 @@ class ResearchRepository(Protocol):
 
     def count_observations_since(self, since: datetime) -> int: ...
 
-    def database_path(self) -> Path: ...
+    def database_location(self) -> str: ...

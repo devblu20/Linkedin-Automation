@@ -1,4 +1,4 @@
-"""Alembic environment for the SQLite persistence adapter."""
+"""Alembic environment for SQLite and PostgreSQL persistence."""
 
 import os
 from logging.config import fileConfig
@@ -11,6 +11,8 @@ from linkedin_automation.infrastructure.persistence.repository import Base
 
 config = context.config
 if migration_url := os.getenv("LINKEDIN_AUTOMATION_MIGRATION_URL"):
+    if migration_url.startswith("postgresql://"):
+        migration_url = migration_url.replace("postgresql://", "postgresql+psycopg://", 1)
     config.set_main_option("sqlalchemy.url", migration_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -12,6 +12,7 @@ class RuntimeSettings:
     """Validated local paths used to compose concrete adapters."""
 
     database_path: Path
+    database_url: str
     artifact_dir: Path
     browser_data_dir: Path
     screenshot_dir: Path
@@ -23,10 +24,15 @@ class RuntimeSettings:
         root = Path.cwd().resolve()
         credentials = os.getenv("GOOGLE_OAUTH_CLIENT_FILE")
         token = os.getenv("GOOGLE_OAUTH_TOKEN_FILE")
+        database_path = Path(
+            os.getenv("LINKEDIN_AUTOMATION_DATABASE", root / "data" / "research.sqlite3")
+        ).resolve()
+        database_url = os.getenv(
+            "LINKEDIN_AUTOMATION_DATABASE_URL", f"sqlite:///{database_path.as_posix()}"
+        )
         return cls(
-            database_path=Path(
-                os.getenv("LINKEDIN_AUTOMATION_DATABASE", root / "data" / "research.sqlite3")
-            ).resolve(),
+            database_path=database_path,
+            database_url=database_url,
             artifact_dir=Path(
                 os.getenv("LINKEDIN_AUTOMATION_ARTIFACT_DIR", root / "artifacts")
             ).resolve(),

@@ -4,7 +4,7 @@ A supervised, configuration-driven backend that discovers LinkedIn people, norma
 deduplicates matching leads, persists auditable runs, generates Excel reports, and optionally
 uploads reports to Google Drive.
 
-The system drafts and tracks human-reviewed outreach but does not send invitations or messages
+The system tracks human-reviewed outreach but does not send invitations or messages
 through browser automation, solve CAPTCHAs, conceal automation, or bypass access controls.
 LinkedIn collection runs in a visible browser and stops when authentication, security challenges,
 rate limits, or unrecognized layouts are detected.
@@ -54,7 +54,8 @@ environment variables directly; it does not automatically load `.env` files.
 
 Important variables:
 
-- `LINKEDIN_AUTOMATION_DATABASE`: SQLite path; defaults to `data/research.sqlite3`.
+- `LINKEDIN_AUTOMATION_DATABASE_URL`: Neon PostgreSQL URL; when unset, SQLite is used.
+- `LINKEDIN_AUTOMATION_DATABASE`: SQLite fallback path; defaults to `data/research.sqlite3`.
 - `LINKEDIN_AUTOMATION_ARTIFACT_DIR`: report directory; defaults to `artifacts`.
 - `LINKEDIN_AUTOMATION_BROWSER_DATA`: persistent Chromium profile directory.
 - `LINKEDIN_AUTOMATION_SCREENSHOT_DIR`: diagnostic screenshot directory.
@@ -63,6 +64,22 @@ Important variables:
 - `GOOGLE_OAUTH_TOKEN_FILE`: external path where the local OAuth token may be stored.
 
 Keep OAuth files and tokens outside this repository.
+
+### Neon PostgreSQL
+
+Create a Neon project, copy its pooled connection string, and set it only in your shell or secret
+manager. Standard `postgresql://` Neon URLs are accepted and automatically use the psycopg driver:
+
+```powershell
+$env:LINKEDIN_AUTOMATION_DATABASE_URL = "postgresql://USER:PASSWORD@HOST/DB?sslmode=require"
+$env:LINKEDIN_AUTOMATION_MIGRATION_URL = $env:LINKEDIN_AUTOMATION_DATABASE_URL
+alembic upgrade head
+linkedin-automation run config\search.local.yaml
+```
+
+After `LINKEDIN_AUTOMATION_DATABASE_URL` is set, collection, status, export, and the review site all
+use Neon. If it is unset, the application continues using the local SQLite database. Do not put the
+real Neon URL in a committed file.
 
 ## Commands
 

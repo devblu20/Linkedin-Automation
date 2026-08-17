@@ -1,4 +1,4 @@
-"""SQLAlchemy-backed SQLite implementation of the research repository."""
+"""SQLAlchemy repository supporting local SQLite and Neon PostgreSQL."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import NullPool
 
@@ -221,13 +222,26 @@ def _outreach_from_row(row: OutreachRow) -> OutreachRecord:
     )
 
 
-class SqliteResearchRepository:
-    """Single-process SQLite repository with deterministic per-run upserts."""
+class DatabaseResearchRepository:
+    """SQLAlchemy repository with deterministic per-run upserts."""
 
-    def __init__(self, path: Path) -> None:
-        self._path = path.resolve()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._engine = create_engine(f"sqlite:///{self._path.as_posix()}", poolclass=NullPool)
+    def __init__(self, database: str | Path) -> None:
+        if isinstance(database, Path) or "://" not in str(database):
+            path = Path(database).resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._database_url = f"sqlite:///{path.as_posix()}"
+            self._path: Path | None = path
+        else:
+            self._database_url = str(database)
+            self._path = None
+        if self._database_url.startswith("postgresql://"):
+            self._database_url = self._database_url.replace(
+                "postgresql://", "postgresql+psycopg://", 1
+            )
+        url = make_url(self._database_url)
+        if url.get_backend_name() not in {"sqlite", "postgresql"}:
+            raise ValueError("database must be a SQLite path/URL or PostgreSQL URL")
+        self._engine = create_engine(self._database_url, pool_pre_ping=True, poolclass=NullPool)
 
     def initialize(self) -> None:
         Base.metadata.create_all(self._engine)
@@ -248,8 +262,11 @@ class SqliteResearchRepository:
             elif current in {"0001", "0002"}:
                 connection.execute(text("UPDATE alembic_version SET version_num = '0003'"))
 
-    def database_path(self) -> Path:
-        return self._path
+    def database_location(self) -> str:
+        """Return a password-safe description of the configured database."""
+        if self._path is not None:
+            return self._database_url
+        return str(make_url(self._database_url).set(password="***"))
 
     def close(self) -> None:
         """Release database resources deterministically."""
@@ -423,7 +440,7 @@ class SqliteResearchRepository:
     @staticmethod
     def _new_run_row(run: ResearchRun) -> RunRow:
         row = RunRow(id=str(run.id))
-        SqliteResearchRepository._copy_run(row, run)
+        DatabaseResearchRepository._copy_run(row, run)
         return row
 
     @staticmethod
@@ -451,7 +468,7 @@ class SqliteResearchRepository:
     @staticmethod
     def _new_lead_row(lead: Lead) -> LeadRow:
         row = LeadRow(id=str(lead.id), run_id=str(lead.run_id), profile_url=lead.profile_url)
-        SqliteResearchRepository._copy_lead(row, lead)
+        DatabaseResearchRepository._copy_lead(row, lead)
         return row
 
     @staticmethod
@@ -473,3 +490,7 @@ class SqliteResearchRepository:
         row.first_observed_at = lead.first_observed_at
         row.last_observed_at = lead.last_observed_at
         row.notes = lead.notes
+
+
+# Backward-compatible name for callers and tests that still construct a local SQLite repository.
+SqliteResearchRepository = DatabaseResearchRepository

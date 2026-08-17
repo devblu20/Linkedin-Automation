@@ -14,7 +14,7 @@ from linkedin_automation.application.validate_search import ValidateSearchDefini
 from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
 from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
-from linkedin_automation.infrastructure.persistence import SqliteResearchRepository
+from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.infrastructure.reporting import ExcelReportWriter
 from linkedin_automation.infrastructure.runtime import RuntimeSettings
 from linkedin_automation.infrastructure.storage import GoogleDriveStorage
@@ -68,7 +68,7 @@ def _workflow(*, with_storage: bool = False) -> ResearchWorkflow:
         )
     return ResearchWorkflow(
         loader=YamlSearchDefinitionLoader(),
-        repository=SqliteResearchRepository(settings.database_path),
+        repository=DatabaseResearchRepository(settings.database_url),
         collector=PlaywrightLinkedInCollector(
             browser_data_dir=settings.browser_data_dir,
             screenshot_dir=settings.screenshot_dir,
@@ -219,7 +219,7 @@ def review(
 
     settings = RuntimeSettings.from_environment()
     typer.echo(f"Review site: http://127.0.0.1:{port}")
-    uvicorn.run(create_review_app(settings.database_path, run_id), host="127.0.0.1", port=port)
+    uvicorn.run(create_review_app(settings.database_url, run_id), host="127.0.0.1", port=port)
 
 
 def main() -> None:
