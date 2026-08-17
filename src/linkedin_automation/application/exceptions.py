@@ -37,6 +37,10 @@ class LayoutChangedError(CollectionError):
     """Expected page semantics are no longer available."""
 
 
+class LimitedVisibilityError(CollectionError):
+    """LinkedIn did not expose profile identities or canonical profile URLs."""
+
+
 class RateLimitedError(CollectionError):
     """The source requested that collection stop."""
 

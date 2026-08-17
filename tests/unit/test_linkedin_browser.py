@@ -21,6 +21,7 @@ def test_builds_bounded_people_search_url() -> None:
     assert url.startswith("https://www.linkedin.com/search/results/people/")
     assert "page=2" in url
     assert "LLM" in url
+    assert "network=%5B%22F%22%2C%22S%22%5D" in url
     assert "AI+Engineer" not in url
     assert "geoUrn=%5B%22102257491%22%5D" not in url
 
