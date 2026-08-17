@@ -7,6 +7,7 @@ from typing import Annotated, NoReturn
 from uuid import UUID
 
 import typer
+from sqlalchemy.engine import make_url
 
 from linkedin_automation.application.errors import ConfigurationError
 from linkedin_automation.application.exceptions import StorageError, WorkflowError
@@ -95,6 +96,11 @@ def run(
     ] = False,
 ) -> None:
     """Start a new supervised research run."""
+    database_url = make_url(RuntimeSettings.from_environment().database_url)
+    if database_url.get_backend_name() == "postgresql":
+        typer.echo(f"Database: Neon PostgreSQL ({database_url.host})")
+    else:
+        typer.echo(f"Database: local SQLite ({database_url.database})")
     if not dry_run:
         typer.echo(
             "Opening the supervised LinkedIn browser. Sign in if prompted; "

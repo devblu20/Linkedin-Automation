@@ -49,8 +49,8 @@ and London location; a person cannot qualify merely by matching the location.
 
 ## Runtime configuration
 
-Copy `.env.example` into your preferred secret-management workflow. The application reads
-environment variables directly; it does not automatically load `.env` files.
+Copy `.env.example` to a gitignored `.env` file and add local secrets there. The application loads
+`.env` automatically; environment variables already set in the shell take precedence.
 
 Important variables:
 

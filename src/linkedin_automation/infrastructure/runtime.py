@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
@@ -22,6 +24,8 @@ class RuntimeSettings:
     @classmethod
     def from_environment(cls) -> RuntimeSettings:
         root = Path.cwd().resolve()
+        # Local secrets stay in the gitignored .env file. Explicit shell variables win.
+        load_dotenv(root / ".env", override=False)
         credentials = os.getenv("GOOGLE_OAUTH_CLIENT_FILE")
         token = os.getenv("GOOGLE_OAUTH_TOKEN_FILE")
         database_path = Path(
