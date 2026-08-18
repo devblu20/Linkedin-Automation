@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,27 +24,41 @@ class RuntimeSettings:
     @classmethod
     def from_environment(cls) -> RuntimeSettings:
         root = Path.cwd().resolve()
-        # Local secrets stay in the gitignored .env file. Explicit shell variables win.
-        load_dotenv(root / ".env", override=False)
-        credentials = os.getenv("GOOGLE_OAUTH_CLIENT_FILE")
-        token = os.getenv("GOOGLE_OAUTH_TOKEN_FILE")
+        # Read local secrets without mutating process-wide state. Explicit shell variables win.
+        file_values = dotenv_values(root / ".env")
+
+        def setting(name: str) -> str | None:
+            return os.getenv(name) or file_values.get(name)
+
+        credentials = setting("GOOGLE_OAUTH_CLIENT_FILE")
+        token = setting("GOOGLE_OAUTH_TOKEN_FILE")
+        shell_database_path = os.getenv("LINKEDIN_AUTOMATION_DATABASE")
+        shell_database_url = os.getenv("LINKEDIN_AUTOMATION_DATABASE_URL")
         database_path = Path(
-            os.getenv("LINKEDIN_AUTOMATION_DATABASE", root / "data" / "research.sqlite3")
+            shell_database_path
+            or file_values.get("LINKEDIN_AUTOMATION_DATABASE")
+            or root / "data" / "research.sqlite3"
         ).resolve()
-        database_url = os.getenv(
-            "LINKEDIN_AUTOMATION_DATABASE_URL", f"sqlite:///{database_path.as_posix()}"
+        database_url = (
+            shell_database_url
+            or (
+                None
+                if shell_database_path
+                else file_values.get("LINKEDIN_AUTOMATION_DATABASE_URL")
+            )
+            or f"sqlite:///{database_path.as_posix()}"
         )
         return cls(
             database_path=database_path,
             database_url=database_url,
             artifact_dir=Path(
-                os.getenv("LINKEDIN_AUTOMATION_ARTIFACT_DIR", root / "artifacts")
+                setting("LINKEDIN_AUTOMATION_ARTIFACT_DIR") or root / "artifacts"
             ).resolve(),
             browser_data_dir=Path(
-                os.getenv("LINKEDIN_AUTOMATION_BROWSER_DATA", root / "browser-data")
+                setting("LINKEDIN_AUTOMATION_BROWSER_DATA") or root / "browser-data"
             ).resolve(),
             screenshot_dir=Path(
-                os.getenv("LINKEDIN_AUTOMATION_SCREENSHOT_DIR", root / "screenshots")
+                setting("LINKEDIN_AUTOMATION_SCREENSHOT_DIR") or root / "screenshots"
             ).resolve(),
             google_credentials_path=Path(credentials).resolve() if credentials else None,
             google_token_path=Path(token).resolve() if token else None,

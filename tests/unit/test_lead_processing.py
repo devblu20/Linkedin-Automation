@@ -72,6 +72,40 @@ def test_enforces_run_state_transitions() -> None:
         run.transition(RunStatus.COMPLETED)
 
 
+def test_rejects_known_company_over_100_employees_but_allows_self_employed() -> None:
+    definition = YamlSearchDefinitionLoader().load(
+        Path("config/bluqq-london-small-funds-trading-teams.yaml")
+    )
+    common = {
+        "full_name": "Alex Founder",
+        "headline": "Founder and options trader",
+        "current_title": "Founder",
+        "location": "London",
+        "company_size_min": 201,
+        "company_size_max": 500,
+    }
+    large_company = process_candidate(
+        LeadCandidate(
+            profile_url="https://linkedin.com/in/large-company",
+            self_employed=False,
+            **common,
+        ),
+        definition,
+        uuid4(),
+    )
+    independent = process_candidate(
+        LeadCandidate(
+            profile_url="https://linkedin.com/in/independent",
+            self_employed=True,
+            **common,
+        ),
+        definition,
+        uuid4(),
+    )
+    assert large_company is None
+    assert independent is not None
+
+
 def test_strict_bluqq_matching_and_evidence_gated_outreach() -> None:
     definition = YamlSearchDefinitionLoader().load(
         Path("config/bluqq-london-prop-family-offices.yaml")

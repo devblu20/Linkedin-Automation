@@ -215,10 +215,12 @@ def drive_auth(
 
 @app.command()
 def review(
-    run_id: Annotated[UUID, typer.Argument(help="Research run UUID to review.")],
+    run_id: Annotated[
+        UUID | None, typer.Argument(help="Optional research run UUID; omit for all Neon leads.")
+    ] = None,
     port: Annotated[int, typer.Option(min=1024, max=65535)] = 8765,
 ) -> None:
-    """Start the local qualification and outreach-review site."""
+    """Review all database leads, optionally filtered to one research run."""
     import uvicorn
 
     from linkedin_automation.interfaces.review_site import create_review_app

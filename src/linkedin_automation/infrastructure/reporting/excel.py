@@ -21,6 +21,14 @@ LEAD_HEADERS = (
     "Company",
     "Location",
     "Industry",
+    "Company Size",
+    "Self Employed",
+    "About",
+    "Experience",
+    "Education",
+    "Skills",
+    "Connections",
+    "Followers",
     "LinkedIn Profile URL",
     "Match Evidence",
     "Source Search",
@@ -39,6 +47,9 @@ OUTREACH_HEADERS = (
     "Fund Evidence Notes",
     "Qualification Score",
     "Review Status",
+    "Connection Request Status",
+    "Connection Approved",
+    "Message Status",
     "Connection Message Draft",
     "Follow-up Message Draft",
     "Updated At (UTC)",
@@ -121,6 +132,18 @@ class ExcelReportWriter:
                     escape_cell(lead.company),
                     escape_cell(lead.location),
                     escape_cell(lead.industry),
+                    (
+                        f"{lead.company_size_min or 1}-{lead.company_size_max}"
+                        if lead.company_size_max is not None
+                        else "Unknown"
+                    ),
+                    "Yes" if lead.self_employed is True else "No/Unknown",
+                    escape_cell(lead.about),
+                    escape_cell(" | ".join(lead.experience)),
+                    escape_cell(" | ".join(lead.education)),
+                    escape_cell(" | ".join(lead.skills)),
+                    escape_cell(lead.connections),
+                    escape_cell(lead.followers),
                     lead.profile_url,
                     escape_cell("; ".join(lead.evidence.matched)),
                     escape_cell(lead.source_search),
@@ -128,7 +151,7 @@ class ExcelReportWriter:
                     escape_cell(lead.notes),
                 )
             )
-            url_cell = lead_sheet.cell(row=lead_sheet.max_row, column=7)
+            url_cell = lead_sheet.cell(row=lead_sheet.max_row, column=15)
             url_cell.hyperlink = lead.profile_url
             url_cell.style = "Hyperlink"
         for row_number in range(2, lead_sheet.max_row + 1):
@@ -137,11 +160,13 @@ class ExcelReportWriter:
                 cell = lead_sheet.cell(row=row_number, column=column_number)
                 cell.alignment = Alignment(
                     vertical="top",
-                    wrap_text=column_number in {2, 3, 4, 8, 9, 11},
+                    wrap_text=column_number in {2, 3, 4, 9, 10, 11, 12, 16, 17, 19},
                 )
-            lead_sheet.cell(row=row_number, column=10).number_format = "yyyy-mm-dd hh:mm:ss"
+            lead_sheet.cell(row=row_number, column=18).number_format = "yyyy-mm-dd hh:mm:ss"
         _style_header(lead_sheet)
-        _set_widths(lead_sheet, (24, 50, 30, 30, 28, 24, 44, 36, 52, 22, 30))
+        _set_widths(
+            lead_sheet, (24, 50, 30, 30, 28, 24, 16, 15, 50, 60, 40, 40, 14, 14, 44, 36, 52, 22, 30)
+        )
 
         outreach_sheet = workbook.create_sheet("Outreach Review")
         outreach_sheet.append(OUTREACH_HEADERS)
@@ -162,6 +187,16 @@ class ExcelReportWriter:
                     escape_cell(record.fund_evidence_notes),
                     record.score,
                     record.status.value,
+                    (
+                        "sent"
+                        if record.status.value
+                        in {"connection_sent", "connected", "message_ready", "message_sent"}
+                        else "not_sent"
+                    ),
+                    "approved"
+                    if record.status.value in {"connected", "message_ready", "message_sent"}
+                    else "not_approved",
+                    "sent" if record.status.value == "message_sent" else "not_sent",
                     escape_cell(record.connection_message),
                     escape_cell(record.follow_up_message),
                     record.updated_at.astimezone(UTC).replace(tzinfo=None),
@@ -176,14 +211,14 @@ class ExcelReportWriter:
             outreach_sheet.row_dimensions[row_number].height = 72
             for column_number in range(1, len(OUTREACH_HEADERS) + 1):
                 outreach_sheet.cell(row=row_number, column=column_number).alignment = Alignment(
-                    vertical="top", wrap_text=column_number in {5, 8, 11, 12}
+                    vertical="top", wrap_text=column_number in {5, 8, 14, 15}
                 )
             outreach_sheet.cell(row=row_number, column=6).number_format = "£#,##0"
-            outreach_sheet.cell(row=row_number, column=13).number_format = "yyyy-mm-dd hh:mm:ss"
+            outreach_sheet.cell(row=row_number, column=16).number_format = "yyyy-mm-dd hh:mm:ss"
         _style_header(outreach_sheet)
         _set_widths(
             outreach_sheet,
-            (24, 28, 28, 42, 22, 20, 42, 36, 18, 20, 54, 54, 22),
+            (24, 28, 28, 42, 22, 20, 42, 36, 18, 20, 22, 20, 18, 54, 54, 22),
         )
 
         summary = workbook.create_sheet("Run Summary")

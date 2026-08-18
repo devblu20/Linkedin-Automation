@@ -7,7 +7,7 @@ import random
 import re
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -256,7 +256,7 @@ def parse_profile_anchors(anchors: list[dict[str, str]], source_search: str) -> 
 
 def _visible_company_size(text: str) -> tuple[int | None, int | None]:
     """Read an employee range only when LinkedIn rendered it in collected text."""
-    match = re.search(r"\b([\d,]+)\s*[-–]\s*([\d,]+)\s+employees\b", text, re.I)
+    match = re.search(r"\b([\d,]+)\s*(?:-|\u2013)\s*([\d,]+)\s+employees\b", text, re.I)
     if match is None:
         return None, None
     return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
@@ -266,6 +266,52 @@ def _visible_self_employed(text: str) -> bool | None:
     lowered = text.casefold()
     values = ("self-employed", "self employed", "sole trader", "independent trader", "solo founder")
     return True if any(value in lowered for value in values) else None
+
+
+def _profile_section(
+    snapshot: str, heading: str, next_headings: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Extract visible lines below a semantic profile heading."""
+    lines = [" ".join(line.split()) for line in snapshot.splitlines() if line.strip()]
+    try:
+        start = (
+            next(index for index, line in enumerate(lines) if line.casefold() == heading.casefold())
+            + 1
+        )
+    except StopIteration:
+        return ()
+    stop = next(
+        (index for index in range(start, len(lines)) if lines[index].casefold() in next_headings),
+        min(len(lines), start + 30),
+    )
+    return tuple(dict.fromkeys(lines[start:stop]))
+
+
+def extract_visible_profile(page: object, candidate: LeadCandidate) -> LeadCandidate:
+    """Capture signed-in, visibly rendered profile fields without accessing hidden data."""
+    main = page.locator("main").first  # type: ignore[attr-defined]
+    snapshot = main.inner_text(timeout=15_000)[:50_000]
+    headings = ("experience", "education", "skills", "recommendations", "interests", "activity")
+    about = " ".join(_profile_section(snapshot, "About", headings))
+    experience = _profile_section(snapshot, "Experience", headings)
+    education = _profile_section(snapshot, "Education", headings)
+    skills = _profile_section(snapshot, "Skills", headings)
+    connection_match = re.search(r"\b([\d,.+KkMm]+)\s+connections?\b", snapshot, re.I)
+    follower_match = re.search(r"\b([\d,.+KkMm]+)\s+followers?\b", snapshot, re.I)
+    size_min, size_max = _visible_company_size(snapshot)
+    return replace(
+        candidate,
+        about=about,
+        experience=experience,
+        education=education,
+        skills=skills,
+        connections=connection_match.group(1) if connection_match else "",
+        followers=follower_match.group(1) if follower_match else "",
+        company_size_min=size_min or candidate.company_size_min,
+        company_size_max=size_max or candidate.company_size_max,
+        self_employed=_visible_self_employed(snapshot) or candidate.self_employed,
+        profile_snapshot=snapshot,
+    )
 
 
 class PlaywrightLinkedInCollector:
@@ -448,7 +494,22 @@ class PlaywrightLinkedInCollector:
                             unique_candidates.append(candidate)
                             page_seen_urls.add(candidate.profile_url)
                         remaining = definition.limits.max_results - len(candidates)
-                        accepted_candidates = unique_candidates[:remaining]
+                        accepted_candidates: list[LeadCandidate] = []
+                        for candidate in unique_candidates[:remaining]:
+                            try:
+                                page.goto(
+                                    candidate.profile_url,
+                                    wait_until="domcontentloaded",
+                                    timeout=self._timeout,
+                                )
+                                self._raise_for_safety_state(page.url, page.title(), page.content())
+                                accepted_candidates.append(extract_visible_profile(page, candidate))
+                            except PlaywrightError:
+                                logger.warning(
+                                    "linkedin_profile_details_timeout",
+                                    extra={"profile_url": candidate.profile_url},
+                                )
+                                accepted_candidates.append(candidate)
                         candidates.extend(accepted_candidates)
                         seen_urls.update(candidate.profile_url for candidate in accepted_candidates)
                         last_page = step_number
@@ -503,14 +564,20 @@ class PlaywrightLinkedInOutreach:
             button.first.click(timeout=self._timeout)
             add_note = page.get_by_role("button", name=re.compile("Add a note", re.I))
             if note.strip() and add_note.count():
-                add_note.click(); page.get_by_role("textbox").last.fill(note[:300])
+                add_note.click()
+                page.get_by_role("textbox").last.fill(note[:300])
             page.get_by_role("button", name=re.compile(r"^Send", re.I)).last.click()
+
         self._act(profile_url, act)
 
     def connection_is_accepted(self, profile_url: str) -> bool:
         value = [False]
-        self._act(profile_url, lambda page: value.__setitem__(0,
-            page.get_by_role("button", name=re.compile(r"^Message$", re.I)).count() > 0))
+        self._act(
+            profile_url,
+            lambda page: value.__setitem__(
+                0, page.get_by_role("button", name=re.compile(r"^Message$", re.I)).count() > 0
+            ),
+        )
         return value[0]
 
     def send_message(self, profile_url: str, content: str) -> None:
@@ -518,20 +585,24 @@ class PlaywrightLinkedInOutreach:
             page.get_by_role("button", name=re.compile(r"^Message$", re.I)).first.click()
             page.locator('[contenteditable="true"][role="textbox"]').last.fill(content)
             page.get_by_role("button", name=re.compile(r"^Send$", re.I)).last.click()
+
         self._act(profile_url, act)
 
     def _act(self, profile_url: str, action: object) -> None:
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
-                str(self._browser_data_dir), headless=False)
+                str(self._browser_data_dir), headless=False
+            )
             try:
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto(profile_url, wait_until="domcontentloaded", timeout=self._timeout)
                 PlaywrightLinkedInCollector._raise_for_safety_state(
-                    page.url, page.title(), page.content())
+                    page.url, page.title(), page.content()
+                )
                 action(page)  # type: ignore[operator]
                 page.wait_for_timeout(random.randint(1500, 3500))
                 PlaywrightLinkedInCollector._raise_for_safety_state(
-                    page.url, page.title(), page.content())
+                    page.url, page.title(), page.content()
+                )
             finally:
                 context.close()

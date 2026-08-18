@@ -72,4 +72,10 @@ def test_reviews_evidence_and_connection_lifecycle(tmp_path: Path) -> None:
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "sending remains manual" in dashboard.text
+
+    with TestClient(create_review_app(database)) as client:
+        response = client.get("/api/leads")
+        assert response.status_code == 200
+        assert response.json()[0]["lead"]["full_name"] == "Alex Founder"
+        assert "All Neon campaigns" in client.get("/").text
         assert "Post-connection message" in dashboard.text

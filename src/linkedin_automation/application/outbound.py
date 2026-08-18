@@ -57,15 +57,17 @@ class OutboundOutreach:
             sent += 1
         return sent
 
-    def check_connections(self, run_id: UUID) -> int:
+    def check_connections(self, run_id: UUID | None = None) -> int:
         accepted = 0
         for record in self.repository.list_outreach(run_id):
             if record.status != OutreachStatus.CONNECTION_SENT:
                 continue
             lead = self.repository.get_lead(record.lead_id)
             if lead and self.browser.connection_is_accepted(lead.profile_url):
+                accepted_at = utc_now()
+                self.repository.mark_connection_accepted(lead.id, accepted_at)
                 self.repository.upsert_outreach(replace(record,
-                    status=OutreachStatus.MESSAGE_READY, updated_at=utc_now()))
+                    status=OutreachStatus.MESSAGE_READY, updated_at=accepted_at))
                 accepted += 1
         return accepted
 

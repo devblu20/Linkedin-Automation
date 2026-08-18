@@ -99,6 +99,13 @@ class LeadRow(Base):
     company_size_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     company_size_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
     self_employed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    about: Mapped[str] = mapped_column(Text, default="")
+    experience_json: Mapped[str] = mapped_column(Text, default="[]")
+    education_json: Mapped[str] = mapped_column(Text, default="[]")
+    skills_json: Mapped[str] = mapped_column(Text, default="[]")
+    connections: Mapped[str] = mapped_column(String(64), default="")
+    followers: Mapped[str] = mapped_column(String(64), default="")
+    profile_snapshot: Mapped[str] = mapped_column(Text, default="")
     evidence_json: Mapped[str] = mapped_column(Text)
     source_search: Mapped[str] = mapped_column(Text)
     first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -203,6 +210,13 @@ def _lead_from_row(row: LeadRow) -> Lead:
         company_size_min=row.company_size_min,
         company_size_max=row.company_size_max,
         self_employed=row.self_employed,
+        about=row.about,
+        experience=tuple(json.loads(row.experience_json)),
+        education=tuple(json.loads(row.education_json)),
+        skills=tuple(json.loads(row.skills_json)),
+        connections=row.connections,
+        followers=row.followers,
+        profile_snapshot=row.profile_snapshot,
     )
 
 
@@ -303,6 +317,13 @@ class DatabaseResearchRepository:
             "company_size_min": candidate.company_size_min,
             "company_size_max": candidate.company_size_max,
             "self_employed": candidate.self_employed,
+            "about": candidate.about,
+            "experience": candidate.experience,
+            "education": candidate.education,
+            "skills": candidate.skills,
+            "connections": candidate.connections,
+            "followers": candidate.followers,
+            "profile_snapshot": candidate.profile_snapshot,
             "source_search": candidate.source_search,
             "collected_at": candidate.collected_at.isoformat(),
         }
@@ -338,11 +359,12 @@ class DatabaseResearchRepository:
             session.commit()
             return inserted
 
-    def list_leads(self, run_id: UUID) -> list[Lead]:
+    def list_leads(self, run_id: UUID | None = None) -> list[Lead]:
         with Session(self._engine) as session:
-            rows = session.scalars(
-                select(LeadRow).where(LeadRow.run_id == str(run_id)).order_by(LeadRow.profile_url)
-            ).all()
+            statement = select(LeadRow)
+            if run_id is not None:
+                statement = statement.where(LeadRow.run_id == str(run_id))
+            rows = session.scalars(statement.order_by(LeadRow.last_observed_at.desc())).all()
             return [_lead_from_row(row) for row in rows]
 
     def get_lead(self, lead_id: UUID) -> Lead | None:
@@ -372,12 +394,13 @@ class DatabaseResearchRepository:
             row = session.get(OutreachRow, str(lead_id))
             return _outreach_from_row(row) if row is not None else None
 
-    def list_outreach(self, run_id: UUID) -> list[OutreachRecord]:
+    def list_outreach(self, run_id: UUID | None = None) -> list[OutreachRecord]:
         with Session(self._engine) as session:
+            statement = select(OutreachRow)
+            if run_id is not None:
+                statement = statement.where(OutreachRow.run_id == str(run_id))
             rows = session.scalars(
-                select(OutreachRow)
-                .where(OutreachRow.run_id == str(run_id))
-                .order_by(OutreachRow.score.desc(), OutreachRow.lead_id)
+                statement.order_by(OutreachRow.score.desc(), OutreachRow.updated_at.desc())
             ).all()
             return [_outreach_from_row(row) for row in rows]
 
@@ -399,13 +422,33 @@ class DatabaseResearchRepository:
             ))
             session.commit()
 
-    def list_connection_requests(self, run_id: UUID) -> list[ConnectionRequest]:
+    def list_connection_requests(self, run_id: UUID | None = None) -> list[ConnectionRequest]:
         with Session(self._engine) as session:
-            rows = session.scalars(select(ConnectionRequestRow).where(
-                ConnectionRequestRow.run_id == str(run_id)
-            ).order_by(ConnectionRequestRow.requested_at.desc())).all()
+            statement = select(ConnectionRequestRow)
+            if run_id is not None:
+                statement = statement.where(ConnectionRequestRow.run_id == str(run_id))
+            rows = session.scalars(statement.order_by(
+                ConnectionRequestRow.requested_at.desc()
+            )).all()
             return [ConnectionRequest(UUID(r.id), UUID(r.lead_id), UUID(r.run_id), r.status,
                 _aware(r.requested_at), _aware(r.updated_at), r.error_message) for r in rows]
+
+    def mark_connection_accepted(self, lead_id: UUID, accepted_at: datetime) -> None:
+        """Mark the newest successful request for a lead as accepted."""
+        with Session(self._engine) as session:
+            row = session.scalar(
+                select(ConnectionRequestRow)
+                .where(
+                    ConnectionRequestRow.lead_id == str(lead_id),
+                    ConnectionRequestRow.status == "sent",
+                )
+                .order_by(ConnectionRequestRow.requested_at.desc())
+                .limit(1)
+            )
+            if row is not None:
+                row.status = "accepted"
+                row.updated_at = accepted_at
+                session.commit()
 
     def count_connection_requests_since(self, since: datetime) -> int:
         with Session(self._engine) as session:
@@ -423,11 +466,12 @@ class DatabaseResearchRepository:
             ))
             session.commit()
 
-    def list_sent_messages(self, run_id: UUID) -> list[SentMessage]:
+    def list_sent_messages(self, run_id: UUID | None = None) -> list[SentMessage]:
         with Session(self._engine) as session:
-            rows = session.scalars(select(SentMessageRow).where(
-                SentMessageRow.run_id == str(run_id)
-            ).order_by(SentMessageRow.sent_at.desc())).all()
+            statement = select(SentMessageRow)
+            if run_id is not None:
+                statement = statement.where(SentMessageRow.run_id == str(run_id))
+            rows = session.scalars(statement.order_by(SentMessageRow.sent_at.desc())).all()
             return [SentMessage(UUID(r.id), UUID(r.lead_id), UUID(r.run_id), r.content,
                 r.status, _aware(r.sent_at), r.error_message) for r in rows]
 
@@ -482,6 +526,13 @@ class DatabaseResearchRepository:
         row.company_size_min = lead.company_size_min
         row.company_size_max = lead.company_size_max
         row.self_employed = lead.self_employed
+        row.about = lead.about
+        row.experience_json = json.dumps(lead.experience)
+        row.education_json = json.dumps(lead.education)
+        row.skills_json = json.dumps(lead.skills)
+        row.connections = lead.connections
+        row.followers = lead.followers
+        row.profile_snapshot = lead.profile_snapshot
         row.evidence_json = json.dumps(
             {"matched": lead.evidence.matched, "excluded": lead.evidence.excluded},
             sort_keys=True,

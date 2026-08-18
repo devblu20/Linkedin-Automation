@@ -46,7 +46,14 @@ qualification:
   require_fund_evidence: false
   company_size_min: 1
   company_size_max: 100
-  prefer_self_employed: false
+  prefer_self_employed: true
+  self_employment_keywords:
+    - self-employed
+    - self employed
+    - independent trader
+    - sole trader
+    - solo founder
+    - founder
   executive_title_priority:
     - Founder
     - Managing Partner

@@ -27,7 +27,7 @@ class OutreachReview:
     def __init__(self, repository: ResearchRepository) -> None:
         self._repository = repository
 
-    def list(self, run_id: UUID) -> list[OutreachItem]:
+    def list(self, run_id: UUID | None = None) -> list[OutreachItem]:
         leads = {lead.id: lead for lead in self._repository.list_leads(run_id)}
         return [
             OutreachItem(leads[record.lead_id], record)

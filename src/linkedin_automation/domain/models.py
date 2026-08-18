@@ -36,6 +36,13 @@ class LeadCandidate:
     company_size_min: int | None = None
     company_size_max: int | None = None
     self_employed: bool | None = None
+    about: str = ""
+    experience: tuple[str, ...] = ()
+    education: tuple[str, ...] = ()
+    skills: tuple[str, ...] = ()
+    connections: str = ""
+    followers: str = ""
+    profile_snapshot: str = ""
     source_search: str = ""
     collected_at: datetime = field(default_factory=utc_now)
 
@@ -61,6 +68,13 @@ class Lead:
     company_size_min: int | None = None
     company_size_max: int | None = None
     self_employed: bool | None = None
+    about: str = ""
+    experience: tuple[str, ...] = ()
+    education: tuple[str, ...] = ()
+    skills: tuple[str, ...] = ()
+    connections: str = ""
+    followers: str = ""
+    profile_snapshot: str = ""
 
 
 @dataclass(frozen=True, slots=True)

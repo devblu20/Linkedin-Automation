@@ -71,6 +71,14 @@ def evaluate_candidate(candidate: LeadCandidate, definition: SearchDefinition) -
         *_matched_values(searchable, criteria.titles.exclude, "title"),
         *_matched_values(searchable, criteria.keywords.exclude, "keyword"),
     ]
+    qualification = definition.qualification
+    if (
+        qualification is not None
+        and candidate.self_employed is not True
+        and candidate.company_size_max is not None
+        and candidate.company_size_max > qualification.company_size_max
+    ):
+        excluded.append(f"company_size:over_{qualification.company_size_max}")
     matched = [
         *_matched_values(searchable, criteria.titles.include, "title"),
         *_matched_values(candidate.location, criteria.locations, "location"),
@@ -232,8 +240,7 @@ def process_candidate(
     inferred_self_employed = candidate.self_employed
     if inferred_self_employed is None and qualification is not None:
         inferred_self_employed = any(
-            keyword.casefold() in searchable
-            for keyword in qualification.self_employment_keywords
+            keyword.casefold() in searchable for keyword in qualification.self_employment_keywords
         )
     return Lead(
         id=uuid4(),
@@ -248,6 +255,17 @@ def process_candidate(
         company_size_min=candidate.company_size_min,
         company_size_max=candidate.company_size_max,
         self_employed=inferred_self_employed,
+        about=normalize_text(candidate.about),
+        experience=tuple(
+            normalize_text(value) for value in candidate.experience if normalize_text(value)
+        ),
+        education=tuple(
+            normalize_text(value) for value in candidate.education if normalize_text(value)
+        ),
+        skills=tuple(normalize_text(value) for value in candidate.skills if normalize_text(value)),
+        connections=normalize_text(candidate.connections),
+        followers=normalize_text(candidate.followers),
+        profile_snapshot=normalize_text(candidate.profile_snapshot),
         evidence=evidence,
         source_search=normalize_text(candidate.source_search),
         first_observed_at=candidate.collected_at,
@@ -270,10 +288,15 @@ def merge_duplicate(existing: Lead, incoming: Lead) -> Lead:
         company_size_min=incoming.company_size_min or existing.company_size_min,
         company_size_max=incoming.company_size_max or existing.company_size_max,
         self_employed=(
-            incoming.self_employed
-            if incoming.self_employed is not None
-            else existing.self_employed
+            incoming.self_employed if incoming.self_employed is not None else existing.self_employed
         ),
+        about=incoming.about or existing.about,
+        experience=incoming.experience or existing.experience,
+        education=incoming.education or existing.education,
+        skills=incoming.skills or existing.skills,
+        connections=incoming.connections or existing.connections,
+        followers=incoming.followers or existing.followers,
+        profile_snapshot=incoming.profile_snapshot or existing.profile_snapshot,
         evidence=MatchEvidence(
             matched=tuple(dict.fromkeys((*existing.evidence.matched, *incoming.evidence.matched))),
             excluded=(),

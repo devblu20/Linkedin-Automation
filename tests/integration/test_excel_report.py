@@ -45,6 +45,15 @@ def test_writes_deterministic_safe_workbook(tmp_path: Path) -> None:
         source_search="test",
         first_observed_at=now,
         last_observed_at=now,
+        company_size_min=1,
+        company_size_max=10,
+        self_employed=True,
+        about="Independent quantitative trader",
+        experience=("Founder at Example",),
+        education=("Example University",),
+        skills=("Options", "Python"),
+        connections="500+",
+        followers="1,200",
     )
     writer = ExcelReportWriter(tmp_path)
     outreach = OutreachRecord(
@@ -66,11 +75,17 @@ def test_writes_deterministic_safe_workbook(tmp_path: Path) -> None:
     sheet = workbook["Leads"]
     assert sheet.freeze_panes == "A2"
     assert sheet["A2"].value == "'=Dangerous Name"
-    assert sheet["G2"].hyperlink.target == lead.profile_url
-    assert isinstance(sheet["J2"].value, datetime)
+    assert sheet["O2"].hyperlink.target == lead.profile_url
+    assert sheet["G2"].value == "1-10"
+    assert sheet["H2"].value == "Yes"
+    assert sheet["I2"].value == "Independent quantitative trader"
+    assert isinstance(sheet["R2"].value, datetime)
     assert sheet["B2"].alignment.wrap_text is True
     assert sheet.row_dimensions[2].height == 60
     assert workbook["Outreach Review"]["F2"].value == 1_000_000
     assert workbook["Outreach Review"]["J2"].value == "approved"
+    assert workbook["Outreach Review"]["K2"].value == "not_sent"
+    assert workbook["Outreach Review"]["L2"].value == "not_approved"
+    assert workbook["Outreach Review"]["M2"].value == "not_sent"
     assert workbook["Run Summary"]["B5"].value == RunStatus.PENDING.value
     workbook.close()
