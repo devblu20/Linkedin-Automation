@@ -9,6 +9,7 @@ from linkedin_automation.infrastructure.browser import (
     build_people_search_url,
     detect_safety_state,
     is_empty_search_results,
+    is_limited_search_results,
     parse_profile_anchors,
     parse_search_results,
 )
@@ -68,6 +69,16 @@ def test_recognizes_normal_empty_results_page() -> None:
     )
     assert is_empty_search_results(html)
     assert not is_empty_search_results("<main>People search</main>")
+
+
+def test_recognizes_commercial_search_limit() -> None:
+    html = (
+        "<main><h2>You might benefit from unlimited search</h2>"
+        "<p>Upgrade to Premium Business so you can search and browse anyone without limits.</p>"
+        "<div>LinkedIn Member</div><div>LinkedIn Member</div></main>"
+    )
+    assert is_limited_search_results(html)
+    assert not is_limited_search_results("<main>Ada Example - Founder</main>")
 
 
 def test_parses_sanitized_people_results() -> None:

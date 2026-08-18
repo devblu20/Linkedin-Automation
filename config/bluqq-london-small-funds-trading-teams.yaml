@@ -35,8 +35,8 @@ search:
     exclude: [recruitment, training course, student, internship]
   required_dimensions: [titles, locations]
 limits:
-  max_results: 150
-  max_pages: 18
+  max_results: 20
+  max_pages: 3
   max_daily_results: 300
   max_daily_connections: 20
   max_daily_messages: 20

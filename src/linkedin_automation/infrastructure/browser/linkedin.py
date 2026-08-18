@@ -21,6 +21,7 @@ from linkedin_automation.application.exceptions import (
     AuthenticationRequiredError,
     CollectionError,
     LayoutChangedError,
+    LimitedVisibilityError,
     RateLimitedError,
     SecurityChallengeError,
 )
@@ -90,6 +91,21 @@ def is_empty_search_results(html: str) -> bool:
     return "no results found" in text and (
         "removing filters" in text or "rephrasing your search" in text
     )
+
+
+def is_limited_search_results(html: str) -> bool:
+    """Recognize commercial-search-limit and identity-hidden result pages."""
+    text = " ".join(re.sub(r"<[^>]+>", " ", html).split()).casefold()
+    commercial_limit = any(
+        marker in text
+        for marker in (
+            "unlimited search",
+            "upgrade to premium business",
+            "search and browse anyone without limits",
+            "commercial use limit",
+        )
+    )
+    return commercial_limit or text.count("linkedin member") >= 2
 
 
 def detect_safety_state(*, url: str, title: str, html: str) -> str | None:
@@ -471,6 +487,22 @@ class PlaywrightLinkedInCollector:
                                 last_page = step_number
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
+                            if candidates:
+                                logger.warning(
+                                    "linkedin_collection_stopped_with_partial_results",
+                                    extra={
+                                        "step": step_number,
+                                        "collected": len(candidates),
+                                        "current_url": page.url,
+                                    },
+                                )
+                                break
+                            if is_limited_search_results(html):
+                                raise LimitedVisibilityError(
+                                    "LinkedIn is hiding profile names and URLs because this "
+                                    "account reached its search visibility limit; no valid "
+                                    "profiles are available to save"
+                                )
                             if page.get_by_text("LinkedIn Member", exact=True).count():
                                 logger.info(
                                     "linkedin_locked_results_skipped",
@@ -503,6 +535,16 @@ class PlaywrightLinkedInCollector:
                                     timeout=self._timeout,
                                 )
                                 self._raise_for_safety_state(page.url, page.title(), page.content())
+                                if "/in/" not in page.url.casefold():
+                                    logger.warning(
+                                        "linkedin_profile_redirect_skipped",
+                                        extra={
+                                            "profile_url": candidate.profile_url,
+                                            "redirect_url": page.url,
+                                        },
+                                    )
+                                    accepted_candidates.append(candidate)
+                                    continue
                                 accepted_candidates.append(extract_visible_profile(page, candidate))
                             except PlaywrightError:
                                 logger.warning(
