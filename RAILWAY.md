@@ -35,9 +35,14 @@ availability and queued/running/completed/failed searches. Requests survive Rail
 restarts in the dedicated `/data/search-jobs.sqlite3` database. One job runs at a
 time; queued or running jobs expire after 30 minutes without automatic replay.
 The worker accepts only matching local version 2 campaign definitions and bounded
-search limits (up to 25 profiles and 5 pages). The dashboard currently searches
-one page per request. `--once` checks for one job and exits. No profile URL is needed.
-Account visibility restrictions stop collection and are reported in the dashboard.
+search limits (up to 25 profiles and 5 pages). The dashboard defaults to a budget
+of three search pages, cycling campaign keywords before later pages. The profile
+limit is a maximum to read, not a promised number of accepted leads. Hidden-only
+queries are skipped within this budget; identities are never unlocked or inferred.
+The UI identifies the last run's requested limits, visited pages, hidden result
+cards and campaign rejection reasons. Hidden cards may repeat between queries.
+`--once` checks for one job and exits. No profile URL is needed.
+Account visibility restrictions are reported in the dashboard.
 The worker never sends outreach. Computer off or worker stopped means no collection.
 
 ## Local collection to hosted review

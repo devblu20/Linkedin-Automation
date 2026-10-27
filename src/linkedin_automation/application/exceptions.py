@@ -20,9 +20,18 @@ class RunNotFoundError(WorkflowError):
 class CollectionError(WorkflowError):
     """Collection could not continue safely."""
 
-    def __init__(self, message: str, *, checkpoint_page: int = 0) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        checkpoint_page: int = 0,
+        pages_visited: int = 0,
+        hidden_result_cards: int = 0,
+    ) -> None:
         super().__init__(message)
         self.checkpoint_page = checkpoint_page
+        self.pages_visited = pages_visited
+        self.hidden_result_cards = hidden_result_cards
 
 
 class AuthenticationRequiredError(CollectionError):

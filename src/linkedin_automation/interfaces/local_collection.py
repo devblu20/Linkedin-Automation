@@ -1,7 +1,5 @@
 """Explicit local-only profile collection from the dashboard."""
 
-
-
 import os
 import tempfile
 from contextlib import closing
@@ -94,7 +92,13 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
             raise HTTPException(422, "Choose a configured campaign and respect its search limits")
         if not lock.acquire(blocking=False):
             raise HTTPException(409, "A search or profile collection is already running")
-        job = {"id": str(uuid4()), "status": "running", "campaign": definition.name, "result": None}
+        job = {
+            "id": str(uuid4()),
+            "status": "running",
+            "campaign": definition.name,
+            "result": None,
+            "requested": {"profiles": payload.max_results, "pages": payload.max_pages},
+        }
         search_history.append(job)
         del search_history[:-10]
         try:
@@ -135,6 +139,9 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
                     "observed": result.run.counters.observed,
                     "accepted": result.lead_count,
                     "rejected": result.run.counters.rejected,
+                    "pages_visited": result.pages_visited,
+                    "hidden_result_cards": result.hidden_result_cards,
+                    "rejection_counts": result.rejection_counts,
                 },
             )
             return job

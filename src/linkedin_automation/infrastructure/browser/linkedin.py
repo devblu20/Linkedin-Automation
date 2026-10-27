@@ -28,6 +28,10 @@ from linkedin_automation.application.exceptions import (
 )
 from linkedin_automation.domain.models import CollectionBatch, LeadCandidate
 from linkedin_automation.domain.search_definition import SearchDefinition
+from linkedin_automation.domain.services import (
+    LeadProcessingError,
+    canonicalize_linkedin_profile_url,
+)
 
 logger = logging.getLogger(__name__)
 _BASE_SEARCH_URL = "https://www.linkedin.com/search/results/people/"
@@ -414,6 +418,9 @@ class PlaywrightLinkedInCollector:
         candidates: list[LeadCandidate] = []
         seen_urls: set[str] = set()
         last_page = start_page - 1
+        pages_visited = 0
+        hidden_result_cards = 0
+        restricted_search = False
         search_steps = build_people_search_steps(definition)
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
@@ -507,6 +514,10 @@ class PlaywrightLinkedInCollector:
                             )
                         current_url, title, html = read_page_snapshot(page)
                         self._raise_for_safety_state(current_url, title, html)
+                        pages_visited += 1
+                        hidden_result_cards += (
+                            page.locator("main").get_by_text("LinkedIn Member", exact=True).count()
+                        )
                         try:
                             rendered_anchors = page.locator('a[href*="/in/"]').evaluate_all(
                                 "elements => elements.flatMap(element => {"
@@ -538,23 +549,13 @@ class PlaywrightLinkedInCollector:
                                 last_page = step_number
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
-                            if candidates:
-                                logger.warning(
-                                    "linkedin_collection_stopped_with_partial_results",
-                                    extra={
-                                        "step": step_number,
-                                        "collected": len(candidates),
-                                        "current_url": page.url,
-                                    },
-                                )
-                                break
                             if is_limited_search_results(html):
-                                raise LimitedVisibilityError(
-                                    "LinkedIn search results do not expose usable names or "
-                                    "profile URLs. Try search.connection_degrees: [1st, 2nd] "
-                                    "to search within your network, or review accessible "
-                                    "profiles manually. Restricted profiles cannot be collected"
-                                )
+                                restricted_search = True
+                                # This query may be hidden while another configured term
+                                # has normal accessible results. Respect the bounded plan.
+                                last_page = step_number
+                                time.sleep(random.uniform(self._min_delay, self._max_delay))
+                                continue
                             if page.get_by_text("LinkedIn Member", exact=True).count():
                                 logger.info(
                                     "linkedin_locked_results_skipped",
@@ -563,6 +564,9 @@ class PlaywrightLinkedInCollector:
                                 last_page = step_number
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
+                            if candidates:
+                                logger.warning("linkedin_layout_changed_after_partial_results")
+                                break
                             raise LayoutChangedError(
                                 "no recognizable people-search results were found; "
                                 "page layout may have changed"
@@ -570,6 +574,13 @@ class PlaywrightLinkedInCollector:
                         unique_candidates: list[LeadCandidate] = []
                         page_seen_urls: set[str] = set()
                         for candidate in page_candidates:
+                            try:
+                                canonical_url = canonicalize_linkedin_profile_url(
+                                    candidate.profile_url
+                                )
+                            except LeadProcessingError:
+                                continue
+                            candidate = replace(candidate, profile_url=canonical_url)
                             if (
                                 candidate.profile_url in seen_urls
                                 or candidate.profile_url in page_seen_urls
@@ -612,6 +623,8 @@ class PlaywrightLinkedInCollector:
                         time.sleep(random.uniform(self._min_delay, self._max_delay))
                 except CollectionError as error:
                     error.checkpoint_page = last_page
+                    error.pages_visited = pages_visited
+                    error.hidden_result_cards = hidden_result_cards
                     raise
                 except PlaywrightError as error:
                     failure = CollectionError(
@@ -621,11 +634,24 @@ class PlaywrightLinkedInCollector:
                     raise failure from error
             finally:
                 context.close()
+        if not candidates and (hidden_result_cards or restricted_search):
+            raise LimitedVisibilityError(
+                "LinkedIn hid the available profile identities within this search budget. "
+                "Restricted profiles cannot be collected.",
+                pages_visited=pages_visited,
+                hidden_result_cards=hidden_result_cards,
+            )
         complete = (
             last_page >= definition.limits.max_pages
             or len(candidates) >= definition.limits.max_results
         )
-        return CollectionBatch(tuple(candidates), checkpoint_page=last_page, complete=complete)
+        return CollectionBatch(
+            tuple(candidates),
+            checkpoint_page=last_page,
+            complete=complete,
+            pages_visited=pages_visited,
+            hidden_result_cards=hidden_result_cards,
+        )
 
     def _capture(self, page: object, page_number: int) -> None:
         path = self._screenshot_dir / f"linkedin-page-{page_number}.png"

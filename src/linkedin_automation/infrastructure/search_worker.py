@@ -123,9 +123,12 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
             "observed": result.run.counters.observed,
             "accepted": result.lead_count,
             "rejected": result.run.counters.rejected,
+            "pages_visited": result.pages_visited,
+            "hidden_result_cards": result.hidden_result_cards,
+            "rejection_counts": result.rejection_counts,
             "message": "Search completed. Matching profiles are saved for review."
             if result.lead_count
-            else "Search completed; no accessible profiles matched this campaign.",
+            else "No read profiles met this campaign's criteria.",
         }
 
 
@@ -164,7 +167,12 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                             "and campaign configuration before retrying."
                         )
                     print(f"Search stopped: {type(error).__name__}", flush=True)
-                    result = {"status": "failed", "message": message}
+                    result = {
+                        "status": "failed",
+                        "message": message,
+                        "pages_visited": getattr(error, "pages_visited", 0),
+                        "hidden_result_cards": getattr(error, "hidden_result_cards", 0),
+                    }
                 finally:
                     stop.set()
                     thread.join(timeout=35)

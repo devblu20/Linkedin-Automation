@@ -20,7 +20,7 @@ class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     campaign: str = Field(min_length=1, max_length=150)
     max_results: int = Field(default=5, ge=1, le=25)
-    max_pages: int = Field(default=1, ge=1, le=5)
+    max_pages: int = Field(default=3, ge=1, le=5)
 
 
 class SearchCompletion(BaseModel):
@@ -31,6 +31,9 @@ class SearchCompletion(BaseModel):
     observed: int = Field(default=0, ge=0, le=25)
     accepted: int = Field(default=0, ge=0, le=25)
     rejected: int = Field(default=0, ge=0, le=25)
+    pages_visited: int = Field(default=0, ge=0, le=5)
+    hidden_result_cards: int = Field(default=0, ge=0, le=1000)
+    rejection_counts: dict[str, int] = Field(default_factory=dict, max_length=10)
     message: str = Field(default="", max_length=500)
 
 
@@ -135,7 +138,12 @@ class SearchJobs:
                     time.time(),
                 ),
             )
-        return {"id": identifier, "status": "queued", "campaign": original.name}
+        return {
+            "id": identifier,
+            "status": "queued",
+            "campaign": original.name,
+            "requested": {"profiles": payload.max_results, "pages": payload.max_pages},
+        }
 
     def expire(self, db):
         cutoff = time.time() - 1800
@@ -192,6 +200,11 @@ class SearchJobs:
             if (
                 result.observed > limits["max_results"]
                 or result.accepted + result.rejected > result.observed
+                or result.pages_visited > limits["max_pages"]
+                or any(
+                    len(key) > 80 or value < 0 or value > 25
+                    for key, value in result.rejection_counts.items()
+                )
             ):
                 raise ValueError("Search counters exceed the requested limits")
             values = result.model_dump(mode="json", exclude={"token"})
@@ -205,7 +218,7 @@ class SearchJobs:
             self.expire(db)
             worker = db.execute("SELECT seen FROM browser_worker WHERE id=1").fetchone()
             rows = db.execute(
-                "SELECT id,name,status,created,result FROM search_jobs "
+                "SELECT id,name,status,created,definition,result FROM search_jobs "
                 "ORDER BY created DESC LIMIT 10"
             ).fetchall()
             return {
@@ -217,6 +230,10 @@ class SearchJobs:
                         "status": row["status"],
                         "created": row["created"],
                         "result": json.loads(row["result"]) if row["result"] else None,
+                        "requested": {
+                            "profiles": json.loads(row["definition"])["limits"]["max_results"],
+                            "pages": json.loads(row["definition"])["limits"]["max_pages"],
+                        },
                     }
                     for row in rows
                 ],

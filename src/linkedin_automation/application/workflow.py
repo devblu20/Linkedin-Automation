@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -31,6 +31,7 @@ from linkedin_automation.domain.services import (
     LeadProcessingError,
     canonicalize_linkedin_profile_url,
     create_outreach_record,
+    evaluate_candidate,
     process_candidate,
 )
 
@@ -41,6 +42,9 @@ class RunResult:
 
     run: ResearchRun
     lead_count: int
+    pages_visited: int = 0
+    hidden_result_cards: int = 0
+    rejection_counts: dict[str, int] = field(default_factory=dict)
 
 
 class ResearchWorkflow:
@@ -213,6 +217,7 @@ class ResearchWorkflow:
             raise
 
         counters = collecting.counters
+        rejection_counts: dict[str, int] = {}
         processing = replace(
             collecting.transition(RunStatus.PROCESSING),
             checkpoint_page=batch.checkpoint_page,
@@ -229,9 +234,27 @@ class ResearchWorkflow:
                 lead = process_candidate(candidate, definition, processing.id)
                 accepted = lead is not None
                 if not accepted:
-                    rejection = "criteria_not_matched_or_excluded"
+                    evidence = evaluate_candidate(candidate, definition)
+                    rejection = ";".join(evidence.excluded) or "no_positive_criteria_matched"
+                    labels = set()
+                    for reason in evidence.excluded or ("no_positive_criteria_matched",):
+                        if reason.startswith("required:"):
+                            label = "Missing required " + reason.split(":", 1)[1]
+                        elif reason.startswith("title:"):
+                            label = "Excluded title"
+                        elif reason.startswith("keyword:"):
+                            label = "Excluded keyword"
+                        elif reason.startswith("company_size:"):
+                            label = "Company exceeds size limit"
+                        else:
+                            label = "No positive campaign criteria matched"
+                        labels.add(label)
+                    for label in labels:
+                        rejection_counts[label] = rejection_counts.get(label, 0) + 1
             except LeadProcessingError as error:
                 rejection = str(error)
+                label = "Invalid profile data"
+                rejection_counts[label] = rejection_counts.get(label, 0) + 1
             self._repository.add_observation(
                 Observation(
                     id=uuid4(),
@@ -283,4 +306,10 @@ class ResearchWorkflow:
                 self._repository.save_run(completed)
                 completed = self.upload(completed.id)
         self._repository.save_run(completed)
-        return RunResult(run=completed, lead_count=len(self._repository.list_leads(completed.id)))
+        return RunResult(
+            run=completed,
+            lead_count=len(self._repository.list_leads(completed.id)),
+            pages_visited=batch.pages_visited,
+            hidden_result_cards=batch.hidden_result_cards,
+            rejection_counts=rejection_counts,
+        )

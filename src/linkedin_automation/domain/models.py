@@ -158,6 +158,8 @@ class CollectionBatch:
     candidates: tuple[LeadCandidate, ...]
     checkpoint_page: int
     complete: bool
+    pages_visited: int = 0
+    hidden_result_cards: int = 0
 
 
 @dataclass(frozen=True, slots=True)

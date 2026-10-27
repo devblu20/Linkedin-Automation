@@ -93,7 +93,9 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
         def collect(self, definition, **kwargs):
             assert definition.limits.max_results == 1
             if outcome == "restricted":
-                raise LimitedVisibilityError("Restricted profile")
+                raise LimitedVisibilityError(
+                    "Restricted profile", pages_visited=1, hidden_result_cards=10
+                )
             if outcome == "empty":
                 return CollectionBatch((), checkpoint_page=1, complete=True)
             candidate = LeadCandidate(
@@ -102,7 +104,13 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
                 headline="Founder of a family office",
                 location="London",
             )
-            return CollectionBatch((candidate,), checkpoint_page=1, complete=True)
+            return CollectionBatch(
+                (candidate,),
+                checkpoint_page=1,
+                complete=True,
+                pages_visited=1,
+                hidden_result_cards=9,
+            )
 
     monkeypatch.setattr(
         "linkedin_automation.infrastructure.search_worker.PlaywrightLinkedInCollector", Collector
@@ -131,12 +139,17 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
         state = http.get("/api/search/settings").json()
         assert state["jobs"][0]["status"] == ("failed" if outcome == "restricted" else "completed")
         assert state["jobs"][0]["result"]["accepted"] == int(outcome == "matched")
+        assert state["jobs"][0]["requested"] == {"profiles": 1, "pages": 1}
         leads = http.get("/api/leads").json()
         if outcome == "matched":
+            assert state["jobs"][0]["result"]["pages_visited"] == 1
+            assert state["jobs"][0]["result"]["hidden_result_cards"] == 9
             assert leads[0]["lead"]["full_name"] == "Example Founder"
             assert leads[0]["outreach"]["status"] == "needs_verification"
         else:
             assert leads == []
+            if outcome == "restricted":
+                assert state["jobs"][0]["result"]["hidden_result_cards"] == 10
 
 
 @pytest.mark.parametrize(

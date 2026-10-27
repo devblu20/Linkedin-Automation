@@ -108,6 +108,7 @@ def test_runs_complete_offline_pipeline_idempotently(tmp_path: Path, monkeypatch
     assert result.run.counters.accepted == 1
     assert result.run.counters.duplicated == 1
     assert result.run.counters.rejected == 1
+    assert result.rejection_counts == {"Excluded title": 1}
     assert result.run.drive_file_id == "drive-id"
     assert repeated.drive_file_id == "drive-id"
     assert storage.uploads == 1
