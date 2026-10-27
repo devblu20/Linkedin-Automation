@@ -1,6 +1,5 @@
 """Persistent search requests for the hosted dashboard and local browser worker."""
 
-import hashlib
 import json
 import secrets
 import sqlite3
@@ -12,7 +11,9 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from linkedin_automation.application.campaigns import CampaignPolicy, definition_hash
 from linkedin_automation.application.errors import ConfigurationError
+from linkedin_automation.infrastructure.campaign_catalog import CampaignCatalog
 from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 
 
@@ -35,14 +36,6 @@ class SearchCompletion(BaseModel):
     hidden_result_cards: int = Field(default=0, ge=0, le=1000)
     rejection_counts: dict[str, int] = Field(default_factory=dict, max_length=10)
     message: str = Field(default="", max_length=500)
-
-
-def definition_hash(definition) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
 
 
 def configured_campaigns(root: Path) -> dict:
@@ -91,6 +84,9 @@ class SearchJobs:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS browser_worker (id INTEGER PRIMARY KEY, seen REAL)"
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(search_jobs)")}
+            if "policy" not in columns:
+                db.execute("ALTER TABLE search_jobs ADD COLUMN policy TEXT")
 
     @contextmanager
     def connection(self):
@@ -99,7 +95,9 @@ class SearchJobs:
             with db:
                 yield db
 
-    def enqueue(self, payload: SearchRequest, campaigns: dict) -> dict:
+    def enqueue(
+        self, payload: SearchRequest, campaigns: dict, *, policy: CampaignPolicy | None = None
+    ) -> dict:
         original = campaigns.get(payload.campaign)
         if original is None:
             raise ValueError("Choose a configured campaign")
@@ -127,15 +125,17 @@ class SearchJobs:
             ).fetchone():
                 raise ValueError("A search is already queued or running; wait for it to finish")
             db.execute(
-                "INSERT INTO search_jobs (id,campaign,name,definition,base_hash,status,created) "
-                "VALUES (?,?,?,?,?,'queued',?)",
+                "INSERT INTO search_jobs "
+                "(id,campaign,name,definition,base_hash,status,created,policy) "
+                "VALUES (?,?,?,?,?,'queued',?,?)",
                 (
                     identifier,
                     payload.campaign,
                     original.name,
                     definition.model_dump_json(),
-                    definition_hash(original),
+                    policy.template_hash if policy else definition_hash(original),
                     time.time(),
+                    policy.model_dump_json() if policy else None,
                 ),
             )
         return {
@@ -184,6 +184,7 @@ class SearchJobs:
                 "base_hash": row["base_hash"],
                 "definition": json.loads(row["definition"]),
                 "token": token,
+                "policy": json.loads(row["policy"]) if row["policy"] else None,
             }
 
     def complete(self, identifier: UUID, result: SearchCompletion) -> None:
@@ -242,19 +243,26 @@ class SearchJobs:
 
 def install_hosted_search(app: FastAPI, root: Path, config_dir: Path) -> None:
     store = SearchJobs(root / "search-jobs.sqlite3")
+    catalog = CampaignCatalog(root / "campaigns.sqlite3", configured_campaigns(config_dir))
+    from linkedin_automation.interfaces.campaign_editor import install_campaign_routes
+
+    install_campaign_routes(app, catalog)
 
     @app.get("/api/search/settings")
     def settings():
         return {
             "mode": "hosted",
-            "campaigns": campaign_options(config_dir),
+            "campaigns": catalog.options(),
             **store.status(),
         }
 
     @app.post("/api/search/jobs")
     def enqueue(payload: SearchRequest):
         try:
-            return store.enqueue(payload, configured_campaigns(config_dir))
+            definition, policy = catalog.resolve(payload.campaign)
+            return store.enqueue(payload, {payload.campaign: definition}, policy=policy)
+        except KeyError:
+            raise HTTPException(422, "Choose a saved campaign") from None
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
 

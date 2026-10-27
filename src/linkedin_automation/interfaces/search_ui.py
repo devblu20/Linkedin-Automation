@@ -2,7 +2,10 @@
 
 # ruff: noqa: E501 - embedded dashboard asset.
 
+from linkedin_automation.interfaces.campaign_editor import CAMPAIGN_DIALOG, CAMPAIGN_SCRIPT
+
 SEARCH_PANEL = """<section class="panel" id="automaticSearch">
+<div class="toolbar" style="flex-wrap:wrap"><div class="search"><strong>Campaign requirements</strong><div class="sub">Choose an existing campaign or create your own.</div></div><button class="btn" id="newCampaign" type="button">New campaign</button><button class="btn" id="editCampaign" type="button">Edit selected campaign</button></div>
 <form id="searchForm" class="toolbar">
 <div class="search"><label for="searchCampaign">Find matching LinkedIn profiles</label><select id="searchCampaign" aria-label="Search campaign" required style="width:100%"><option value="">Choose campaign</option></select></div>
 <div><label for="searchLimit">Profile limit</label><input id="searchLimit" type="number" min="1" max="25" value="5" required style="width:90px;padding:10px;border:1px solid #d0d5dd;border-radius:8px"></div>
@@ -32,8 +35,11 @@ searchResult.textContent=text;
 }
 async function refreshSearch(){try{const r=await fetch('/api/search/settings');if(!r.ok)throw Error('Cannot load search settings');const state=await r.json();const selected=searchCampaign.value;if(JSON.stringify(state.campaigns)!==JSON.stringify(campaignOptions)){campaignOptions=state.campaigns;searchCampaign.replaceChildren(new Option('Choose campaign',''));for(const item of campaignOptions)searchCampaign.add(new Option(item.name,item.id));searchCampaign.value=selected;}workerStatus.textContent=state.mode==='local'?'Uses your saved LinkedIn login on this computer.':state.worker_online?'Browser worker online — ready to run searches.':'Browser worker offline. Searches will wait until it is started on your computer.';const active=(state.jobs||[]).some(j=>['queued','running'].includes(j.status));searchButton.disabled=submitting||active||!campaignOptions.length;if(state.jobs?.length)showSearchJob(state.jobs[0]);if(!active)await Promise.all([load(),loadSummary()]);}catch(error){workerStatus.textContent=error.message;}}
 function changedSearch(){searchDraft.textContent='Settings changed. Click Search and fetch to start a new run; the last result below is unchanged.';}
-searchCampaign.onchange=()=>{const item=campaignOptions.find(x=>x.id===searchCampaign.value);document.getElementById('searchCriteria').textContent=item?.criteria||'Campaign rules determine which profiles are accepted.';changedSearch();};
+searchCampaign.onchange=()=>{const item=campaignOptions.find(x=>x.id===searchCampaign.value);document.getElementById('searchCriteria').textContent=item?.criteria||'Campaign rules determine which profiles are accepted.';const profile=document.getElementById('searchLimit'),pages=document.getElementById('searchPages');profile.max=item?.profile_limit||25;pages.max=item?.page_limit||5;profile.value=item?.default_profiles||5;pages.value=item?.default_pages||3;changedSearch();};
 document.getElementById('searchLimit').oninput=changedSearch;document.getElementById('searchPages').oninput=changedSearch;
 searchForm.onsubmit=async e=>{e.preventDefault();submitting=true;searchButton.disabled=true;searchDraft.textContent='Starting automatic LinkedIn search…';try{const r=await fetch('/api/search/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({campaign:searchCampaign.value,max_results:Number(document.getElementById('searchLimit').value),max_pages:Number(document.getElementById('searchPages').value)})});const job=await r.json();if(!r.ok)throw Error(typeof job.detail==='string'?job.detail:'Check campaign, profile limit and search pages');showSearchJob(job);searchDraft.textContent='Search submitted. The selected profile limit is a maximum, not a guaranteed number of matches.';}catch(error){searchDraft.textContent=error.message;}finally{submitting=false;await refreshSearch();}};
 refreshSearch();setInterval(refreshSearch,5000);
 </script>"""
+
+SEARCH_PANEL += CAMPAIGN_DIALOG
+SEARCH_SCRIPT += CAMPAIGN_SCRIPT

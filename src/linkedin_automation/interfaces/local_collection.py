@@ -18,13 +18,13 @@ from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.domain.services import canonicalize_linkedin_profile_url
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
 from linkedin_automation.infrastructure.browser.direct_profile import DirectProfileCollector
+from linkedin_automation.infrastructure.campaign_catalog import CampaignCatalog
 from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.infrastructure.reporting import ExcelReportWriter
 from linkedin_automation.infrastructure.runtime import RuntimeSettings
 from linkedin_automation.interfaces.search_jobs import (
     SearchRequest,
-    campaign_options,
     configured_campaigns,
 )
 
@@ -45,6 +45,10 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
     lock = Lock()
     loader = YamlSearchDefinitionLoader()
     search_history = []
+    settings = RuntimeSettings.from_environment()
+    catalog = CampaignCatalog(
+        settings.artifact_dir / "campaigns.sqlite3", configured_campaigns(root)
+    )
 
     def campaigns() -> dict[str, Path]:
         found = {}
@@ -77,13 +81,16 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
             "mode": "local",
             "worker_online": True,
             "jobs": search_history[-10:][::-1],
-            "campaigns": campaign_options(root),
+            "campaigns": catalog.options(),
         }
 
     @app.post("/api/search/jobs")
     def automatic_search(request: Request, payload: SearchRequest):
         local_request(request, write=True)
-        definition = configured_campaigns(root).get(payload.campaign)
+        try:
+            definition, _ = catalog.resolve(payload.campaign)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(422, "Select a valid saved campaign") from error
         if (
             definition is None
             or payload.max_results > definition.limits.max_results
@@ -150,6 +157,10 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
             raise HTTPException(422, str(error)) from error
         finally:
             lock.release()
+
+    from linkedin_automation.interfaces.campaign_editor import install_campaign_routes
+
+    install_campaign_routes(app, catalog, request_guard=local_request)
 
     @app.get("/api/collection/campaigns")
     def list_campaigns(request: Request):

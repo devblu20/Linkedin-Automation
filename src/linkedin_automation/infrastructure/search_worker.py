@@ -14,6 +14,7 @@ from uuid import UUID
 
 import yaml
 
+from linkedin_automation.application.campaigns import CampaignPolicy, compile_campaign
 from linkedin_automation.application.exceptions import (
     AuthenticationRequiredError,
     LimitedVisibilityError,
@@ -75,9 +76,15 @@ class DashboardClient:
 
 def validate_job(job: dict, config_dir: Path) -> SearchDefinition:
     UUID(job["id"])
-    original = configured_campaigns(config_dir).get(job["campaign"])
+    policy = CampaignPolicy.model_validate(job["policy"]) if job.get("policy") else None
+    identifier = policy.spec.template_id if policy else job["campaign"]
+    original = configured_campaigns(config_dir).get(identifier)
     if original is None or definition_hash(original) != job["base_hash"]:
         raise ValueError("Worker campaign configuration differs from the dashboard")
+    if policy:
+        if definition_hash(original) != policy.template_hash:
+            raise ValueError("Campaign template does not match the local worker")
+        original = compile_campaign(original, policy.spec, job["campaign"])
     requested = SearchDefinition.model_validate(job["definition"])
     if requested.model_copy(update={"limits": original.limits}) != original:
         raise ValueError("Worker only accepts changes to search limits")

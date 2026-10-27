@@ -145,6 +145,30 @@ the same dashboard authentication and origin checks. Add `?dry_run=true` for
 validation only. Hosted search requests use separate authenticated `/api/search/*`
 endpoints; browser execution always runs on the local worker.
 
+## Saved campaign requirements
+
+Use **New campaign** or **Edit selected campaign** in the dashboard to set job
+titles, locations, industries, companies, include/exclude keywords, required
+matches, connection degrees and collection limits. Saving selects that campaign;
+it does not start a search. The original YAML templates remain unchanged.
+
+Hosted edits persist in `/data/campaigns.sqlite3` on this service's own volume.
+Local edits use `campaigns.sqlite3` inside the configured artifact directory.
+Each edit requires the current revision, so a stale browser cannot silently
+overwrite another edit. A queued search stores its campaign revision and rules;
+later edits apply only to future searches.
+
+The worker verifies saved search requirements against its trusted local template.
+Qualification, outreach policy, report paths and maximum collection limits cannot
+be replaced through the editor. Saved campaigns therefore work without creating
+new local YAML files. Restart the local worker after updating to code that supports
+saved campaign policies. Older queued jobs remain compatible: startup adds only
+a nullable `policy` column to the existing search-jobs table.
+
+Before deploying changes, back up this service's `research.sqlite3`,
+`search-jobs.sqlite3` and, when present, `campaigns.sqlite3` using SQLite's backup
+API. Keep backups on its own volume and never operate on another service's data.
+
 ## Verification
 
 - Without credentials, `/` and `/api/leads` return 401.
