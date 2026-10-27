@@ -62,6 +62,14 @@ recommendations. Unavailable fields remain uncollected. The details view shows
 matching evidence and the fields used for campaign checks; About and past activity
 do not silently become evidence of a current trading role.
 
+Collected-profile filters ignore stale responses, so a slow previous all-runs
+request cannot overwrite a newly selected run. An opt-in browser regression can
+be run with an existing local run containing exactly one collected profile:
+
+```powershell
+python tests/browser/check_observation_filters.py <run-id> --url http://127.0.0.1:8766/
+```
+
 The worker automatically syncs visible observations (accepted and rejected) through
 `POST /api/import/research`. Acceptance is recomputed on the server. The existing
 observations table is reused; no migration is needed. Imports are atomic and
