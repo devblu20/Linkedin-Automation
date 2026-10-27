@@ -46,4 +46,5 @@ Thumbs.db
 .test-temp/
 .sync-test-temp/
 .sync-test-temp-2/
+.navigation-test-temp/
 .playwright-browsers/

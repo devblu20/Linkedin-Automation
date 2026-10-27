@@ -14,8 +14,8 @@ from pathlib import Path
 from urllib.parse import urlencode, urljoin
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
 
 from linkedin_automation.application.exceptions import (
     AuthenticationRequiredError,
@@ -330,6 +330,31 @@ def extract_visible_profile(page: object, candidate: LeadCandidate) -> LeadCandi
     )
 
 
+def read_page_snapshot(page: Page, timeout_seconds: float = 10) -> tuple[str, str, str]:
+    """Read a settled document after manual redirects without bypassing any challenge."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if page.is_closed():
+            raise CollectionError("LinkedIn browser was closed; resume the run to continue")
+        try:
+            return page.url, page.title(), page.content()
+        except PlaywrightError as error:
+            transient = any(
+                marker in str(error).casefold()
+                for marker in (
+                    "navigating",
+                    "execution context was destroyed",
+                    "cannot find context",
+                )
+            )
+            if not transient or time.monotonic() >= deadline:
+                raise LayoutChangedError("LinkedIn page did not settle after navigation") from error
+            try:
+                page.wait_for_timeout(250)
+            except PlaywrightError as closed:
+                raise CollectionError("LinkedIn browser closed during navigation") from closed
+
+
 class PlaywrightLinkedInCollector:
     """Collect LinkedIn results in a user-visible persistent browser context."""
 
@@ -408,8 +433,8 @@ class PlaywrightLinkedInCollector:
                                 raise LayoutChangedError(
                                     "LinkedIn search navigation was interrupted"
                                 ) from error
-                        html = page.content()
-                        state = detect_safety_state(url=page.url, title=page.title(), html=html)
+                        current_url, title, html = read_page_snapshot(page)
+                        state = detect_safety_state(url=current_url, title=title, html=html)
                         if state == "authentication":
                             logger.warning("linkedin_authentication_waiting")
                             try:
@@ -432,17 +457,15 @@ class PlaywrightLinkedInCollector:
                                     "use LinkedIn email/phone and password instead of "
                                     "Google sign-in"
                                 ) from error
-                            html = page.content()
-                        state = detect_safety_state(url=page.url, title=page.title(), html=html)
+                            current_url, title, html = read_page_snapshot(page)
+                        state = detect_safety_state(url=current_url, title=title, html=html)
                         if state == "security_challenge":
                             logger.warning("linkedin_security_challenge_waiting")
                             deadline = time.monotonic() + self._authentication_timeout / 1_000
                             while time.monotonic() < deadline:
                                 page.wait_for_timeout(1_000)
-                                html = page.content()
-                                state = detect_safety_state(
-                                    url=page.url, title=page.title(), html=html
-                                )
+                                current_url, title, html = read_page_snapshot(page)
+                                state = detect_safety_state(url=current_url, title=title, html=html)
                                 if state != "security_challenge":
                                     break
                             else:
@@ -450,12 +473,19 @@ class PlaywrightLinkedInCollector:
                                     "LinkedIn security challenge was not completed within "
                                     "five minutes"
                                 )
-                        self._raise_for_safety_state(page.url, page.title(), html)
+                        self._raise_for_safety_state(current_url, title, html)
+                        if "/search/results/people" not in current_url:
+                            # Manual verification may finish on the feed instead
+                            # of the original research query. Never parse feed cards.
+                            page.goto(source_url, wait_until="domcontentloaded")
+                            current_url, title, html = read_page_snapshot(page)
+                            self._raise_for_safety_state(current_url, title, html)
                         with suppress(PlaywrightTimeoutError):
                             page.locator('a[href*="/in/"]').first.wait_for(
                                 state="attached", timeout=min(self._timeout, 15_000)
                             )
-                        html = page.content()
+                        current_url, title, html = read_page_snapshot(page)
+                        self._raise_for_safety_state(current_url, title, html)
                         try:
                             rendered_anchors = page.locator('a[href*="/in/"]').evaluate_all(
                                 "elements => elements.flatMap(element => {"
@@ -534,7 +564,7 @@ class PlaywrightLinkedInCollector:
                                     wait_until="domcontentloaded",
                                     timeout=self._timeout,
                                 )
-                                self._raise_for_safety_state(page.url, page.title(), page.content())
+                                self._raise_for_safety_state(*read_page_snapshot(page))
                                 if "/in/" not in page.url.casefold():
                                     logger.warning(
                                         "linkedin_profile_redirect_skipped",
@@ -561,6 +591,12 @@ class PlaywrightLinkedInCollector:
                 except CollectionError as error:
                     error.checkpoint_page = last_page
                     raise
+                except PlaywrightError as error:
+                    failure = CollectionError(
+                        "LinkedIn browser navigation interrupted; resume the run"
+                    )
+                    failure.checkpoint_page = last_page
+                    raise failure from error
             finally:
                 context.close()
         complete = (
