@@ -176,7 +176,7 @@ def test_parses_degree_marker_on_separate_line() -> None:
     assert candidates[0].company == "G7FX"
 
 
-def test_parses_view_button_card_without_connection_degree() -> None:
+def test_skips_anonymous_view_button_card_even_with_profile_link() -> None:
     candidates = parse_profile_anchors(
         [
             {
@@ -192,12 +192,7 @@ def test_parses_view_button_card_without_connection_degree() -> None:
         ],
         "rendered-search",
     )
-    assert len(candidates) == 1
-    assert candidates[0].full_name == "LinkedIn Member"
-    assert candidates[0].headline == "Systematic Proprietary Trading"
-    assert candidates[0].location == "London, England, United Kingdom"
-    assert candidates[0].current_title == "Head of Proprietary Trading"
-    assert candidates[0].company == "Undisclosed Hedge Fund"
+    assert candidates == []
 
 
 @pytest.mark.parametrize(

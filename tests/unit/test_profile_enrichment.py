@@ -91,9 +91,10 @@ def test_profile_loading_wait_is_bounded_and_reads_late_visible_sections():
 
         def inner_text(self, **kwargs):
             return (
-                "Example Person\nAbout\nAccessibility"
+                "Example Person\nCEO & co-founder of Suade\nLondon\nAbout\nAccessibility"
                 if page.waits < 2
-                else "Example Person\nAbout\nVisible subject description\nFeatured\nOther posts"
+                else "Example Person\nCEO & co-founder of Suade\nLondon\nAbout\n"
+                "Visible subject description\nFeatured\nOther posts"
             )
 
     class Page:

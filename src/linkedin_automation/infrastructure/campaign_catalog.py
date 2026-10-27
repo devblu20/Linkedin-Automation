@@ -12,6 +12,7 @@ from linkedin_automation.application.campaigns import (
     definition_hash,
     spec_from_template,
 )
+from linkedin_automation.application.search_plan import build_people_search_steps
 
 
 class CampaignConflict(ValueError):
@@ -142,6 +143,10 @@ class CampaignCatalog:
                     else min(3, definition.limits.max_pages),
                     "profile_limit": min(25, definition.limits.max_results),
                     "page_limit": min(5, definition.limits.max_pages),
+                    "queries": [
+                        {"term": term, "page": page}
+                        for term, page in build_people_search_steps(definition)[:5]
+                    ],
                 }
             )
         return options

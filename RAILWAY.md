@@ -171,6 +171,30 @@ API. Keep backups on its own volume and never operate on another service's data.
 
 ## Verification
 
+### Search accuracy and access
+
+The dashboard previews the same bounded query plan executed by the worker.
+Specific role phrases already covered by positive keywords are tried first;
+remaining keywords/companies follow in order, with case-insensitive deduplication
+and later-page cycling inside the selected page budget. Matching and qualification
+rules stay unchanged. For example, Independent Trader is tried before broad
+trading searches when the campaign already includes independent as a keyword.
+
+The collector reads identified cards inside the actual people-search results,
+supporting current semantic data-view-name cards and legacy result containers.
+It excludes anonymous LinkedIn Member cards and unrelated links. A current,
+matching profile URL and visible subject header are required before saving a
+candidate; stale search-card fields are not a fallback for failed profile reads.
+Current visible headline/location replace old search-card details, and obsolete
+role/company/self-employment/size inferences are cleared. Failed or redirected
+visits count toward the profile limit as well.
+
+The account may still see only anonymous results. A bounded search then reports
+the visibility limitation without inventing leads or approving inaccessible
+people. This requires account access or another authorized source; deployment
+alone cannot unlock LinkedIn visibility. Source-verified manual research is
+labelled separately from automatic discovery.
+
 ### Dashboard downloads
 
 **Download CSV** and **Download Excel** export collected profiles using the run

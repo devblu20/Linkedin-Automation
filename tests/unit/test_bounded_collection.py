@@ -72,8 +72,17 @@ class SearchPage:
         return self.locator("main")
 
 
-def collect(monkeypatch, tmp_path, pages, limit=5):
+def collect(monkeypatch, tmp_path, pages, limit=5, redirect=None, unreadable=False):
     page = SearchPage(pages)
+    if redirect:
+        original_goto = page.goto
+
+        def redirected_goto(url, **kwargs):
+            original_goto(url, **kwargs)
+            if "/in/" in url:
+                page.url = redirect
+
+        page.goto = redirected_goto
     context = SimpleNamespace(pages=[page], close=lambda: None)
 
     @contextmanager
@@ -85,9 +94,15 @@ def collect(monkeypatch, tmp_path, pages, limit=5):
     monkeypatch.setattr(
         "linkedin_automation.infrastructure.browser.linkedin.sync_playwright", playwright
     )
+
+    def extract(p, candidate):
+        if unreadable:
+            raise PlaywrightTimeoutError("Profile unavailable")
+        return candidate
+
     monkeypatch.setattr(
         "linkedin_automation.infrastructure.browser.linkedin.extract_visible_profile",
-        lambda p, c: c,
+        extract,
     )
     monkeypatch.setattr(
         "linkedin_automation.infrastructure.browser.linkedin.time.sleep", lambda _: None
@@ -147,3 +162,27 @@ def test_read_limit_stops_before_additional_queries(monkeypatch, tmp_path):
     )
     assert len(batch.candidates) == 2
     assert len(page.queries) == 1
+
+
+@pytest.mark.parametrize(
+    "redirect", ["https://www.linkedin.com/feed/", "https://www.linkedin.com/in/another-person/"]
+)
+def test_redirected_profile_is_not_saved_from_search_card(monkeypatch, tmp_path, redirect):
+    batch, page = collect(monkeypatch, tmp_path, [([anchor("A")], 0)], redirect=redirect)
+    assert batch.candidates == ()
+    assert len(page.profile_visits) == 1
+
+
+def test_unreadable_profile_is_not_accepted_from_stale_search_card(monkeypatch, tmp_path):
+    batch, _ = collect(monkeypatch, tmp_path, [([anchor("A")], 0)], unreadable=True)
+    assert batch.candidates == ()
+
+
+def test_failed_profile_visits_also_respect_limit(monkeypatch, tmp_path):
+    batch, page = collect(
+        monkeypatch, tmp_path, [([anchor("A")], 0), ([anchor("B")], 0)], limit=1, unreadable=True
+    )
+    assert batch.candidates == ()
+    assert len(page.profile_visits) == 1
+    assert len(page.queries) == 1
+    assert batch.complete

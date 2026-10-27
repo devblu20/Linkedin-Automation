@@ -26,6 +26,7 @@ from linkedin_automation.application.exceptions import (
     RateLimitedError,
     SecurityChallengeError,
 )
+from linkedin_automation.application.search_plan import build_people_search_steps
 from linkedin_automation.domain.models import CollectionBatch, LeadCandidate
 from linkedin_automation.domain.search_definition import SearchDefinition
 from linkedin_automation.domain.services import (
@@ -76,18 +77,20 @@ def build_people_search_url(
     return f"{_BASE_SEARCH_URL}?{query}"
 
 
-def build_people_search_steps(definition: SearchDefinition) -> list[tuple[str, int]]:
-    """Plan bounded single-term searches, cycling terms before requesting later pages."""
-    search = definition.search
-    terms = [*search.keywords.include, *search.companies]
-    if not terms:
-        terms = list(search.industries)
-    if not terms:
-        terms = list(search.titles.include)
-    return [
-        (terms[(step - 1) % len(terms)], ((step - 1) // len(terms)) + 1)
-        for step in range(1, definition.limits.max_pages + 1)
-    ]
+SEARCH_CARD_SELECTOR = (
+    'main [data-view-name="people-search-result"], '
+    "main li.reusable-search__result-container, main li[data-lead-result]"
+)
+SEARCH_CARD_SCRIPT = r"""cards => cards.flatMap(card => {
+    if (!card.getClientRects().length) return [];
+    const text = card.innerText || '';
+    const lines = text.split(/\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length < 3 || lines[0].toLowerCase() === 'linkedin member') return [];
+    const link = card.querySelector('a[data-view-name="search-result-lockup-title"][href*="/in/"]')
+        || card.querySelector('a[href*="/in/"]');
+    if (!link || !link.getClientRects().length) return [];
+    return [{href: link.href, text}];
+})"""
 
 
 def _boolean_or_group(terms: list[str]) -> str:
@@ -223,6 +226,7 @@ def parse_search_results(html: str, source_search: str) -> list[LeadCandidate]:
             collected_at=collected_at,
         )
         for record in parser.records
+        if record.name.casefold() != "linkedin member"
     ]
 
 
@@ -244,7 +248,7 @@ def parse_profile_anchors(anchors: list[dict[str, str]], source_search: str) -> 
         remaining = lines[1:]
         if remaining and re.fullmatch(rf"{degree_marker}\s*(?:1st|2nd|3rd\+?)", remaining[0]):
             remaining = remaining[1:]
-        if len(remaining) < 2 or not name:
+        if len(remaining) < 2 or not name or name.casefold() == "linkedin member":
             continue
         headline, location = remaining[0], remaining[1]
         current_title = ""
@@ -399,6 +403,48 @@ def enrich_visible_profile_text(snapshot: str, candidate: LeadCandidate) -> Lead
     )
 
 
+def refresh_profile_header(snapshot: str, candidate: LeadCandidate) -> LeadCandidate | None:
+    """Prefer the subject's current visible headline/location to an older search card."""
+    lines = [
+        " ".join(line.split())
+        for line in _profile_header_text(snapshot).splitlines()
+        if line.strip()
+    ]
+    index = next(
+        (
+            i
+            for i, line in enumerate(lines[:6])
+            if line.casefold() == candidate.full_name.casefold()
+        ),
+        None,
+    )
+    if index is None:
+        return None
+    remaining = lines[index + 1 :]
+    while remaining and re.fullmatch(
+        r"[•·]?\s*(?:1st|2nd|3rd\+?|\([^)]*\)|she/her|he/him|they/them)", remaining[0], re.I
+    ):
+        remaining.pop(0)
+    if len(remaining) < 2 or remaining[1].casefold() in {
+        "connect",
+        "message",
+        "follow",
+        "contact info",
+        "more",
+    }:
+        return None
+    return replace(
+        candidate,
+        headline=remaining[0],
+        location=remaining[1],
+        current_title="",
+        company="",
+        company_size_min=None,
+        company_size_max=None,
+        self_employed=None,
+    )
+
+
 def extract_visible_profile(page: Page, candidate: LeadCandidate) -> LeadCandidate:
     """Wait briefly for lazy profile content and perform two normal bounded scrolls."""
     main = page.locator("main").first
@@ -417,7 +463,10 @@ def extract_visible_profile(page: Page, candidate: LeadCandidate) -> LeadCandida
         page.wait_for_timeout(600)
         snapshot = main.inner_text(timeout=15_000)[:50_000]
     PlaywrightLinkedInCollector._raise_for_safety_state(*read_page_snapshot(page))
-    return enrich_visible_profile_text(snapshot, candidate)
+    current = refresh_profile_header(snapshot, candidate)
+    if current is None:
+        raise LimitedVisibilityError("The profile's current subject header could not be verified")
+    return enrich_visible_profile_text(snapshot, current)
 
 
 def read_page_snapshot(page: Page, timeout_seconds: float = 10) -> tuple[str, str, str]:
@@ -488,6 +537,7 @@ class PlaywrightLinkedInCollector:
         seen_urls: set[str] = set()
         last_page = start_page - 1
         pages_visited = 0
+        profile_attempts = 0
         hidden_result_cards = 0
         restricted_search = False
         search_steps = build_people_search_steps(definition)
@@ -578,7 +628,7 @@ class PlaywrightLinkedInCollector:
                             current_url, title, html = read_page_snapshot(page)
                             self._raise_for_safety_state(current_url, title, html)
                         with suppress(PlaywrightTimeoutError):
-                            page.locator('a[href*="/in/"]').first.wait_for(
+                            page.locator(SEARCH_CARD_SELECTOR).first.wait_for(
                                 state="attached", timeout=min(self._timeout, 15_000)
                             )
                         current_url, title, html = read_page_snapshot(page)
@@ -588,17 +638,8 @@ class PlaywrightLinkedInCollector:
                             page.locator("main").get_by_text("LinkedIn Member", exact=True).count()
                         )
                         try:
-                            rendered_anchors = page.locator('a[href*="/in/"]').evaluate_all(
-                                "elements => elements.flatMap(element => {"
-                                "let card = element; "
-                                "for (let depth = 0; depth < 8 && card; depth += 1) {"
-                                "const text = card.innerText || ''; "
-                                "const lines = text.split(/\\n/).filter(line => line.trim()); "
-                                "if (lines.length >= 3 && text.length < 2000) "
-                                "return [{href: element.href, text}]; "
-                                "card = card.parentElement; "
-                                "} "
-                                "return []; })"
+                            rendered_anchors = page.locator(SEARCH_CARD_SELECTOR).evaluate_all(
+                                SEARCH_CARD_SCRIPT
                             )
                         except PlaywrightError as error:
                             self._capture(page, step_number)
@@ -657,9 +698,11 @@ class PlaywrightLinkedInCollector:
                                 continue
                             unique_candidates.append(candidate)
                             page_seen_urls.add(candidate.profile_url)
-                        remaining = definition.limits.max_results - len(candidates)
+                        remaining = definition.limits.max_results - profile_attempts
                         accepted_candidates: list[LeadCandidate] = []
                         for candidate in unique_candidates[:remaining]:
+                            profile_attempts += 1
+                            seen_urls.add(candidate.profile_url)
                             try:
                                 page.goto(
                                     candidate.profile_url,
@@ -667,7 +710,10 @@ class PlaywrightLinkedInCollector:
                                     timeout=self._timeout,
                                 )
                                 self._raise_for_safety_state(*read_page_snapshot(page))
-                                if "/in/" not in page.url.casefold():
+                                if (
+                                    canonicalize_linkedin_profile_url(page.url)
+                                    != candidate.profile_url
+                                ):
                                     logger.warning(
                                         "linkedin_profile_redirect_skipped",
                                         extra={
@@ -675,19 +721,17 @@ class PlaywrightLinkedInCollector:
                                             "redirect_url": page.url,
                                         },
                                     )
-                                    accepted_candidates.append(candidate)
                                     continue
                                 accepted_candidates.append(extract_visible_profile(page, candidate))
-                            except PlaywrightError:
+                            except (PlaywrightError, LeadProcessingError, LimitedVisibilityError):
                                 logger.warning(
-                                    "linkedin_profile_details_timeout",
+                                    "linkedin_profile_unreadable_skipped",
                                     extra={"profile_url": candidate.profile_url},
                                 )
-                                accepted_candidates.append(candidate)
                         candidates.extend(accepted_candidates)
                         seen_urls.update(candidate.profile_url for candidate in accepted_candidates)
                         last_page = step_number
-                        if len(candidates) >= definition.limits.max_results:
+                        if profile_attempts >= definition.limits.max_results:
                             break
                         time.sleep(random.uniform(self._min_delay, self._max_delay))
                 except CollectionError as error:
@@ -712,7 +756,7 @@ class PlaywrightLinkedInCollector:
             )
         complete = (
             last_page >= definition.limits.max_pages
-            or len(candidates) >= definition.limits.max_results
+            or profile_attempts >= definition.limits.max_results
         )
         return CollectionBatch(
             tuple(candidates),
