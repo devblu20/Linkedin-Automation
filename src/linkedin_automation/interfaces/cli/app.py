@@ -254,7 +254,11 @@ def review(
 
     settings = RuntimeSettings.from_environment()
     typer.echo(f"Review site: http://127.0.0.1:{port}")
-    uvicorn.run(create_review_app(settings.database_url, run_id), host="127.0.0.1", port=port)
+    uvicorn.run(
+        create_review_app(settings.database_url, run_id, enable_collection=True),
+        host="127.0.0.1",
+        port=port,
+    )
 
 
 def main() -> None:

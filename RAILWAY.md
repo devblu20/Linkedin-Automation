@@ -62,6 +62,14 @@ criteria, and exports locally. It does not upload, connect or message. A profile
 that fails the campaign criteria remains a rejected observation rather than a lead.
 Use a separate definition and report filename for technical tests.
 
+The local `python -m linkedin_automation review --port 8766` dashboard includes a
+Collect profile form when viewing all campaigns. Choose a configured version 2
+campaign and paste one normally accessible profile URL. Collection opens the
+local Chrome profile, applies campaign matching, saves accepted leads for review,
+and creates the local Excel report. Rejected profiles are counted in the result;
+they do not appear as accepted leads. Only one dashboard collection runs at a time.
+Run-specific review pages and the hosted app do not enable these endpoints.
+
 Run from this checkout with the local research database configured:
 
 ```powershell

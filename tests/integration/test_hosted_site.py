@@ -35,6 +35,8 @@ def test_hosted_boundaries(monkeypatch, tmp_path: Path):
         assert dashboard.status_code == 200
         assert "Send approved" not in dashboard.text
         assert "Send ready messages" not in dashboard.text
+        assert 'id="collectForm"' not in dashboard.text
+        assert client.post("/api/collection/profile", json={}).status_code == 404
         assert "escapeHtml(l.full_name)" in dashboard.text
         assert dashboard.headers["cache-control"] == "no-store"
         for action in ["queue", "send-connections", "send-messages", "check-connections"]:

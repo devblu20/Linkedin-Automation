@@ -46,16 +46,20 @@ class BatchAction(BaseModel):
     lead_ids: list[UUID] = Field(min_length=1, max_length=20)
 
 
-def create_review_app(database_url: str | Path, run_id: UUID | None = None) -> FastAPI:
+def create_review_app(
+    database_url: str | Path,
+    run_id: UUID | None = None,
+    *,
+    enable_collection: bool = False,
+    config_dir: Path | None = None,
+) -> FastAPI:
     """Create a local review application for all leads or one research run."""
     repository = DatabaseResearchRepository(database_url)
     repository.initialize()
     review = OutreachReview(repository)
     settings = RuntimeSettings.from_environment()
     reporter = ExcelReportWriter(settings.artifact_dir)
-    outbound = OutboundOutreach(
-        repository, PlaywrightLinkedInOutreach(settings.browser_data_dir)
-    )
+    outbound = OutboundOutreach(repository, PlaywrightLinkedInOutreach(settings.browser_data_dir))
 
     def refresh_excel() -> None:
         """Regenerate each affected run workbook from the latest database state."""
@@ -80,11 +84,43 @@ def create_review_app(database_url: str | Path, run_id: UUID | None = None) -> F
     app = FastAPI(
         title="Lead Qualification Review", docs_url=None, redoc_url=None, lifespan=lifespan
     )
+    local_collection = enable_collection and run_id is None
+    if local_collection:
+        from linkedin_automation.interfaces.local_collection import install_local_collection
+
+        install_local_collection(app, database_url, config_dir or Path("config"))
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
         scope = f"Run {run_id}" if run_id is not None else "All Neon campaigns"
-        return _DASHBOARD_HTML.replace("__SCOPE__", scope)
+        html = _DASHBOARD_HTML.replace("__SCOPE__", scope)
+        for expression in (
+            "initials(l.full_name)",
+            "l.full_name",
+            "l.profile_url",
+            "l.current_title||l.headline||'Title unavailable'",
+            "l.company||'Unknown company'",
+            "l.location||'Location unavailable'",
+        ):
+            html = html.replace("${" + expression + "}", "${escapeHtml(" + expression + ")}")
+        if local_collection:
+            from linkedin_automation.interfaces.local_collection import (
+                COLLECTION_PANEL,
+                COLLECTION_SCRIPT,
+            )
+
+            html = html.replace("<main>", "<main>" + COLLECTION_PANEL, 1)
+            html = html.replace("</body>", COLLECTION_SCRIPT + "</body>")
+            html = html.replace("All Neon campaigns", "Local research campaigns")
+            html = html.replace("Neon connected", "Local research")
+            html = html.replace("London client pipeline", "LinkedIn research pipeline")
+            html = html.replace("Loading Neon leads", "Loading leads")
+            html = html.replace(
+                "No qualified clients found in Neon.", "No matching leads collected yet."
+            )
+            html = html.replace("Changes are saved to Neon", "Changes are saved locally")
+            html = html.replace("Client updated in Neon", "Client updated locally")
+        return html
 
     @app.get("/api/leads")
     def list_leads() -> list[dict[str, object]]:
@@ -97,17 +133,32 @@ def create_review_app(database_url: str | Path, run_id: UUID | None = None) -> F
     def summary() -> dict[str, object]:
         statuses = [record.status for record in repository.list_outreach(run_id)]
         return {
-            "fetched": len(repository.list_leads(run_id)),
-            "qualified": sum(s not in {OutreachStatus.NEEDS_VERIFICATION,
-                                       OutreachStatus.REJECTED} for s in statuses),
-            "connection_sent": sum(s in {OutreachStatus.CONNECTION_SENT,
-                OutreachStatus.CONNECTED, OutreachStatus.MESSAGE_READY,
-                OutreachStatus.MESSAGE_SENT} for s in statuses),
-            "connected": sum(s in {OutreachStatus.CONNECTED,
-                OutreachStatus.MESSAGE_READY, OutreachStatus.MESSAGE_SENT} for s in statuses),
+            "fetched": len(review.list(run_id)),
+            "qualified": sum(
+                s not in {OutreachStatus.NEEDS_VERIFICATION, OutreachStatus.REJECTED}
+                for s in statuses
+            ),
+            "connection_sent": sum(
+                s
+                in {
+                    OutreachStatus.CONNECTION_SENT,
+                    OutreachStatus.CONNECTED,
+                    OutreachStatus.MESSAGE_READY,
+                    OutreachStatus.MESSAGE_SENT,
+                }
+                for s in statuses
+            ),
+            "connected": sum(
+                s
+                in {
+                    OutreachStatus.CONNECTED,
+                    OutreachStatus.MESSAGE_READY,
+                    OutreachStatus.MESSAGE_SENT,
+                }
+                for s in statuses
+            ),
             "message_sent": statuses.count(OutreachStatus.MESSAGE_SENT),
-            "connection_requests": [asdict(x) for x in
-                                    repository.list_connection_requests(run_id)],
+            "connection_requests": [asdict(x) for x in repository.list_connection_requests(run_id)],
             "messages": [asdict(x) for x in repository.list_sent_messages(run_id)],
         }
 
@@ -179,6 +230,7 @@ main{padding:28px 32px;display:grid;gap:22px}.metrics{display:grid;grid-template
 <main><section id="metrics" class="metrics"></section><section class="panel"><div class="toolbar"><div class="search"><input id="search" placeholder="Search name, company, title or location"></div><select id="statusFilter"><option value="">All statuses</option></select><button class="btn" onclick="checkConnections()">Refresh connections</button><button class="btn dark" onclick="batch('/api/actions/queue')">Queue ready</button><button class="btn primary" onclick="batch('/api/actions/send-connections')">Send approved</button><button class="btn primary" onclick="batch('/api/actions/send-messages')">Send ready messages</button></div><div class="table-wrap"><table><thead><tr><th>Client</th><th>Company & location</th><th>Campaign</th><th>Score</th><th>Status</th><th>Actions</th></tr></thead><tbody id="leadRows"></tbody></table><div id="empty" class="empty">Loading Neon leads…</div></div></section></main></section></div>
 <dialog id="editor"><form id="editForm"><div class="modal-head"><div><h2 id="editorName"></h2><div id="editorMeta" class="sub"></div></div><button type="button" class="close" onclick="editor.close()">x</button></div><div id="formGrid" class="form-grid"></div><div class="modal-actions"><span id="saveResult" class="sub">Changes are saved to Neon</span><div><a id="profileLink" class="icon-btn" target="_blank" rel="noopener">Open LinkedIn</a> <button class="btn primary" type="submit">Save client</button></div></div></form></dialog><div id="toast" class="toast"></div>
 <script>
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 const statuses=['needs_verification','ready_for_review','approved','connection_queued','connection_sent','connected','message_ready','message_sent','rejected'];let leads=[],editing=null;const rows=document.getElementById('leadRows'),empty=document.getElementById('empty'),editor=document.getElementById('editor');
 const label=s=>s.replaceAll('_',' ');const initials=n=>n.split(/\s+/).slice(0,2).map(x=>x[0]||'').join('').toUpperCase();
 function field(title,value,name,type='text',full=false){const w=document.createElement('div');w.className='field'+(full?' full':'');const l=document.createElement('label');l.textContent=title;let el;if(type==='select'){el=document.createElement('select');for(const s of statuses){const o=document.createElement('option');o.value=s;o.textContent=label(s);o.selected=s===value;el.append(o)}}else{el=document.createElement(type==='textarea'?'textarea':'input');el.value=value??'';if(type!=='textarea')el.type=type}el.name=name;w.append(l,el);return w}
