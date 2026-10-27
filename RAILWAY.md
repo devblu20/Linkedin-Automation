@@ -52,6 +52,16 @@ pagination, rejection reasons and missing-field details. Saved leads for review
 contains accepted campaign matches separately. Rejected collected profiles never
 become approved leads merely because they were synced.
 
+Profile enrichment waits briefly for lazy visible sections and performs two
+bounded normal scrolls. About/experience/education/skills stop at the next profile
+section; Featured posts, activity, footer and suggested profiles are excluded.
+Current role/company are filled only from an explicit employer relationship in
+the headline when the search card did not already provide them. Follower counts,
+connections and company-size evidence come from the subject's header, not sidebar
+recommendations. Unavailable fields remain uncollected. The details view shows
+matching evidence and the fields used for campaign checks; About and past activity
+do not silently become evidence of a current trading role.
+
 The worker automatically syncs visible observations (accepted and rejected) through
 `POST /api/import/research`. Acceptance is recomputed on the server. The existing
 observations table is reused; no migration is needed. Imports are atomic and

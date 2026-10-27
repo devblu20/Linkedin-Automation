@@ -69,7 +69,8 @@ def test_collected_rejections_sync_without_becoming_leads(client):
     rejected = client.get("/api/observations?decision=rejected").json()["items"]
     assert len(rejected) == 1
     assert rejected[0]["reasons"] == ["Missing required keywords"]
-    assert "company" in rejected[0]["missing_fields"]
+    assert "Company" in rejected[0]["missing_fields"]
+    assert "location:London" in rejected[0]["matching_evidence"]
     assert "profile_snapshot" not in rejected[0]["profile"]
     assert len(client.get("/api/leads").json()) == 1
     assert client.get("/api/leads").json()[0]["outreach"]["status"] == "needs_verification"

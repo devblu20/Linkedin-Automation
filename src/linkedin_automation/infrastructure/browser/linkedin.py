@@ -313,31 +313,79 @@ def _profile_section(
     return tuple(dict.fromkeys(lines[start:stop]))
 
 
-def extract_visible_profile(page: object, candidate: LeadCandidate) -> LeadCandidate:
-    """Capture signed-in, visibly rendered profile fields without accessing hidden data."""
-    main = page.locator("main").first  # type: ignore[attr-defined]
-    snapshot = main.inner_text(timeout=15_000)[:50_000]
-    headings = (
-        "experience",
-        "education",
-        "skills",
-        "recommendations",
-        "interests",
-        "activity",
-        "accessibility",
-        "talent solutions",
-        "community guidelines",
-        "questions?",
-    )
-    about = " ".join(_profile_section(snapshot, "About", headings))
-    experience = _profile_section(snapshot, "Experience", headings)
-    education = _profile_section(snapshot, "Education", headings)
-    skills = _profile_section(snapshot, "Skills", headings)
-    connection_match = re.search(r"\b([\d,.+KkMm]+)\s+connections?\b", snapshot, re.I)
-    follower_match = re.search(r"\b([\d,.+KkMm]+)\s+followers?\b", snapshot, re.I)
-    size_min, size_max = _visible_company_size(snapshot)
+_PROFILE_BOUNDARIES = (
+    "about",
+    "featured",
+    "experience",
+    "education",
+    "skills",
+    "recommendations",
+    "interests",
+    "activity",
+    "accessibility",
+    "talent solutions",
+    "community guidelines",
+    "questions?",
+    "more profiles for you",
+    "people you may know",
+    "you might like",
+    "licenses & certifications",
+    "projects",
+    "volunteering",
+    "publications",
+    "honors & awards",
+    "languages",
+    "causes",
+)
+
+
+def _profile_header_text(snapshot: str) -> str:
+    lines = []
+    for line in snapshot.splitlines():
+        label = " ".join(line.split()).casefold()
+        if label in _PROFILE_BOUNDARIES or label.startswith("people who follow "):
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _explicit_role_company(headline: str) -> tuple[str, str]:
+    """Only split an explicitly stated role/employer relationship in the headline."""
+    for separator in (r"\s+at\s+", r"\s+@\s+", r"\s+of\s+"):
+        parts = re.split(separator, headline, maxsplit=1, flags=re.I)
+        if len(parts) != 2:
+            continue
+        role, company = parts
+        if separator == r"\s+of\s+" and not re.search(
+            r"\b(ceo|cto|coo|founder|owner)\b", role, re.I
+        ):
+            continue
+        if re.search(
+            r"\b(ceo|cto|coo|chief|founder|owner|partner|director|president|head|manager|trader|engineer|analyst|consultant|developer|designer)\b",
+            role,
+            re.I,
+        ):
+            company = re.split(r"\s*[|•]\s*", company, maxsplit=1)[0].strip()
+            if company and len(company) <= 255:
+                return role.strip(), company
+    return "", ""
+
+
+def enrich_visible_profile_text(snapshot: str, candidate: LeadCandidate) -> LeadCandidate:
+    """Parse only the subject's visible sections, excluding activity and suggestions."""
+    about = " ".join(_profile_section(snapshot, "About", _PROFILE_BOUNDARIES))[:16_000]
+    experience = _profile_section(snapshot, "Experience", _PROFILE_BOUNDARIES)
+    education = _profile_section(snapshot, "Education", _PROFILE_BOUNDARIES)
+    skills = _profile_section(snapshot, "Skills", _PROFILE_BOUNDARIES)
+    header = _profile_header_text(snapshot)
+    role, company = _explicit_role_company(candidate.headline)
+    connection_match = re.search(r"\b([\d,.+KkMm]+)\s+connections?\b", header, re.I)
+    follower_match = re.search(r"\b([\d,.+KkMm]+)\s+followers?\b", header, re.I)
+    size_min, size_max = _visible_company_size(header)
     return replace(
         candidate,
+        current_title=candidate.current_title or role,
+        company=candidate.company or company,
         about=about,
         experience=experience,
         education=education,
@@ -346,9 +394,30 @@ def extract_visible_profile(page: object, candidate: LeadCandidate) -> LeadCandi
         followers=follower_match.group(1) if follower_match else "",
         company_size_min=size_min or candidate.company_size_min,
         company_size_max=size_max or candidate.company_size_max,
-        self_employed=_visible_self_employed(snapshot) or candidate.self_employed,
+        self_employed=_visible_self_employed(candidate.headline) or candidate.self_employed,
         profile_snapshot=snapshot,
     )
+
+
+def extract_visible_profile(page: Page, candidate: LeadCandidate) -> LeadCandidate:
+    """Wait briefly for lazy profile content and perform two normal bounded scrolls."""
+    main = page.locator("main").first
+    main.wait_for(state="visible", timeout=15_000)
+    snapshot = main.inner_text(timeout=15_000)[:50_000]
+    for _ in range(6):
+        if any(
+            _profile_section(snapshot, heading, _PROFILE_BOUNDARIES)
+            for heading in ("About", "Experience", "Education", "Skills")
+        ):
+            break
+        page.wait_for_timeout(400)
+        snapshot = main.inner_text(timeout=15_000)[:50_000]
+    for _ in range(2):
+        page.mouse.wheel(0, 650)
+        page.wait_for_timeout(600)
+        snapshot = main.inner_text(timeout=15_000)[:50_000]
+    PlaywrightLinkedInCollector._raise_for_safety_state(*read_page_snapshot(page))
+    return enrich_visible_profile_text(snapshot, candidate)
 
 
 def read_page_snapshot(page: Page, timeout_seconds: float = 10) -> tuple[str, str, str]:

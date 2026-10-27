@@ -8,6 +8,8 @@ from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
 
+from linkedin_automation.domain.search_definition import SearchDefinition
+from linkedin_automation.domain.services import evaluate_candidate
 from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 
 
@@ -66,13 +68,19 @@ def install_observation_routes(
             selected, accepted=accepted, limit=limit + 1, offset=offset
         )
         names = {}
+        definitions = {}
         items = []
         for item in collected[:limit]:
             if item.run_id not in names:
                 run = repository.get_run(item.run_id)
                 names[item.run_id] = run.search_name if run else "Unknown campaign"
+                definitions[item.run_id] = (
+                    SearchDefinition.model_validate_json(run.definition_json) if run else None
+                )
             profile = asdict(item.candidate)
             profile.pop("profile_snapshot", None)
+            definition = definitions[item.run_id]
+            evidence = evaluate_candidate(item.candidate, definition) if definition else None
             items.append(
                 {
                     "id": str(item.id),
@@ -81,9 +89,16 @@ def install_observation_routes(
                     "profile": profile,
                     "decision": "accepted" if item.accepted else "rejected",
                     "reasons": explain_rejection(item.rejection_reason),
+                    "matching_evidence": list(evidence.matched) if evidence else [],
                     "missing_fields": [
-                        key
-                        for key in ("company", "current_title", "industry", "about", "experience")
+                        label
+                        for key, label in {
+                            "company": "Company",
+                            "current_title": "Current role",
+                            "industry": "Industry",
+                            "about": "About",
+                            "experience": "Experience",
+                        }.items()
                         if not profile[key]
                     ],
                 }
@@ -113,7 +128,7 @@ OBSERVATION_SCRIPT = """<script>
 let observationOffset=0,observationItems=[];const observationLimit=25;
 const obsRows=document.getElementById('observationRows'),obsEmpty=document.getElementById('observationEmpty'),obsRun=document.getElementById('observationRun'),obsDecision=document.getElementById('observationDecision');
 function obsCell(row,text){const cell=document.createElement('td');cell.textContent=text;row.appendChild(cell);return cell}
-function showObservation(item){const panel=document.getElementById('observationDetails');panel.replaceChildren();const values={Name:item.profile.full_name,Headline:item.profile.headline,Location:item.profile.location,Company:item.profile.company,'Current title':item.profile.current_title,Industry:item.profile.industry,About:item.profile.about,Experience:item.profile.experience,Education:item.profile.education,Skills:item.profile.skills,Connections:item.profile.connections,Followers:item.profile.followers,Decision:item.decision,Reasons:item.reasons,'Missing fields':item.missing_fields,'Collected at':item.profile.collected_at};for(const [title,value] of Object.entries(values)){const box=document.createElement('div');box.className='field full';const label=document.createElement('label'),text=document.createElement('div');label.textContent=title;text.className='profile-value';text.textContent=Array.isArray(value)?value.join(' | ')||'Not collected':value||'Not collected';box.append(label,text);panel.appendChild(box)}document.getElementById('observationDialog').showModal()}
+function showObservation(item){const panel=document.getElementById('observationDetails');panel.replaceChildren();const values={Name:item.profile.full_name,Headline:item.profile.headline,Location:item.profile.location,Company:item.profile.company,'Current title':item.profile.current_title,Industry:item.profile.industry,About:item.profile.about,Experience:item.profile.experience,Education:item.profile.education,Skills:item.profile.skills,Connections:item.profile.connections,Followers:item.profile.followers,Decision:item.decision,'Matched criteria':item.matching_evidence,Reasons:item.reasons,'Matching fields':'Current headline, role, company, location and industry. Featured posts and suggested profiles are excluded.','Missing fields':item.missing_fields,'Collected at':item.profile.collected_at};for(const [title,value] of Object.entries(values)){const box=document.createElement('div');box.className='field full';const label=document.createElement('label'),text=document.createElement('div');label.textContent=title;text.className='profile-value';text.textContent=Array.isArray(value)?value.join(' | ')||'Not collected':value||'Not collected';box.append(label,text);panel.appendChild(box)}document.getElementById('observationDialog').showModal()}
 async function loadObservations(){try{const query=new URLSearchParams({decision:obsDecision.value,limit:String(observationLimit),offset:String(observationOffset)});if(obsRun.value)query.set('run_id',obsRun.value);const response=await fetch('/api/observations?'+query);if(!response.ok)throw Error('Could not load collected profiles');const data=await response.json();observationItems=data.items;obsRows.replaceChildren();for(const item of observationItems){const row=document.createElement('tr'),person=obsCell(row,'');const name=document.createElement('strong'),headline=document.createElement('div');name.textContent=item.profile.full_name;headline.textContent=item.profile.headline||'Headline not collected';headline.className='sub';person.append(name,headline);obsCell(row,item.profile.location||'Not collected');obsCell(row,item.campaign+' · '+item.run_id.slice(0,8));obsCell(row,item.decision);obsCell(row,[item.reasons.join('; '),item.missing_fields.length?'Not collected: '+item.missing_fields.join(', '):''].filter(Boolean).join(' · ')||'Matches campaign criteria');const actions=obsCell(row,'');const button=document.createElement('button');button.className='icon-btn';button.textContent='View details';button.onclick=()=>showObservation(item);actions.append(button);obsRows.append(row)}const counts=data.counts;document.getElementById('observationSummary').textContent=`${counts.read} collected · ${counts.accepted} accepted · ${counts.rejected} rejected in this scope. Rejected entries are kept for inspection.`;obsEmpty.style.display=data.items.length?'none':'block';obsEmpty.textContent='No collected profiles in this view yet.';document.getElementById('previousObservations').disabled=observationOffset===0;document.getElementById('nextObservations').disabled=!data.has_more;document.getElementById('observationPage').textContent='Page '+(1+Math.floor(observationOffset/observationLimit));}catch(error){obsEmpty.style.display='block';obsEmpty.textContent=error.message}}
 async function loadObservationRuns(){const response=await fetch('/api/research/runs');if(!response.ok)return;const items=await response.json(),selected=obsRun.value;obsRun.replaceChildren(new Option('All runs',''));for(const item of items)obsRun.add(new Option(item.campaign+' · '+new Date(item.created_at).toLocaleString()+' · '+item.id.slice(0,8),item.id));obsRun.value=selected;}
 obsRun.onchange=obsDecision.onchange=()=>{observationOffset=0;loadObservations()};document.getElementById('refreshObservations').onclick=()=>Promise.all([loadObservationRuns(),loadObservations()]);document.getElementById('previousObservations').onclick=()=>{observationOffset=Math.max(0,observationOffset-observationLimit);loadObservations()};document.getElementById('nextObservations').onclick=()=>{observationOffset+=observationLimit;loadObservations()};document.getElementById('closeObservation').onclick=()=>document.getElementById('observationDialog').close();Promise.all([loadObservationRuns(),loadObservations()]);setInterval(()=>Promise.all([loadObservationRuns(),loadObservations()]),15000);
