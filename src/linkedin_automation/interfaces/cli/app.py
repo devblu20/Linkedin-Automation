@@ -325,3 +325,26 @@ def sync_run(
     except (ValueError, OSError) as error:
         _fail(error)
     typer.echo(result)
+
+
+@app.command("worker")
+def browser_worker(
+    url: Annotated[str, typer.Option(help="Hosted dashboard HTTPS origin.")],
+    credentials_file: Annotated[Path, typer.Option(help="Local dashboard credentials file.")],
+    once: Annotated[bool, typer.Option(help="Check for one queued job and exit.")] = False,
+) -> None:
+    """Run cloud-requested searches in the local signed-in browser; never send outreach."""
+    from dotenv import dotenv_values
+
+    from linkedin_automation.infrastructure.search_worker import DashboardClient, run_worker
+
+    try:
+        credentials = dotenv_values(credentials_file)
+        client = DashboardClient(
+            url,
+            credentials.get("DASHBOARD_USERNAME") or "",
+            credentials.get("DASHBOARD_PASSWORD") or "",
+        )
+        run_worker(client, Path("config"), once=once)
+    except (ValueError, OSError) as error:
+        _fail(error)

@@ -3,11 +3,14 @@
 # ruff: noqa: E501 - static dashboard markup follows the review site's embedded assets.
 
 import os
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from threading import Lock
 from urllib.parse import urlsplit
+from uuid import uuid4
 
+import yaml
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -15,11 +18,13 @@ from linkedin_automation.application.errors import ConfigurationError
 from linkedin_automation.application.exceptions import WorkflowError
 from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.domain.services import canonicalize_linkedin_profile_url
+from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
 from linkedin_automation.infrastructure.browser.direct_profile import DirectProfileCollector
 from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.infrastructure.reporting import ExcelReportWriter
 from linkedin_automation.infrastructure.runtime import RuntimeSettings
+from linkedin_automation.interfaces.search_jobs import SearchRequest, configured_campaigns
 
 
 class ProfileCollection(BaseModel):
@@ -37,6 +42,7 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
     root = config_dir.resolve()
     lock = Lock()
     loader = YamlSearchDefinitionLoader()
+    search_history = []
 
     def campaigns() -> dict[str, Path]:
         found = {}
@@ -61,6 +67,81 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
             raise HTTPException(403, "Invalid request origin")
         if write and not request.headers.get("content-type", "").startswith("application/json"):
             raise HTTPException(403, "JSON is required")
+
+    @app.get("/api/search/settings")
+    def search_settings(request: Request):
+        local_request(request)
+        return {
+            "mode": "local",
+            "worker_online": True,
+            "jobs": search_history[-10:][::-1],
+            "campaigns": [
+                {"id": key, "name": definition.name}
+                for key, definition in configured_campaigns(root).items()
+            ],
+        }
+
+    @app.post("/api/search/jobs")
+    def automatic_search(request: Request, payload: SearchRequest):
+        local_request(request, write=True)
+        definition = configured_campaigns(root).get(payload.campaign)
+        if (
+            definition is None
+            or payload.max_results > definition.limits.max_results
+            or payload.max_pages > definition.limits.max_pages
+        ):
+            raise HTTPException(422, "Choose a configured campaign and respect its search limits")
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "A search or profile collection is already running")
+        job = {"id": str(uuid4()), "status": "running", "campaign": definition.name, "result": None}
+        search_history.append(job)
+        del search_history[:-10]
+        try:
+            settings = RuntimeSettings.from_environment()
+            definition = definition.model_copy(
+                update={
+                    "limits": definition.limits.model_copy(
+                        update={
+                            "max_results": payload.max_results,
+                            "max_pages": payload.max_pages,
+                        }
+                    )
+                }
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "search.yaml"
+                path.write_text(
+                    yaml.safe_dump(definition.model_dump(mode="json")), encoding="utf-8"
+                )
+                with closing(
+                    ResearchWorkflow(
+                        loader=loader,
+                        repository=DatabaseResearchRepository(database_url),
+                        collector=PlaywrightLinkedInCollector(
+                            browser_data_dir=settings.browser_data_dir,
+                            screenshot_dir=settings.screenshot_dir,
+                            browser_channel=os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL")
+                            or "chrome",
+                        ),
+                        reporter=ExcelReportWriter(settings.artifact_dir),
+                    )
+                ) as workflow:
+                    result = workflow.start(path, dry_run=False, upload=False)
+            job.update(
+                status="completed",
+                result={
+                    "run_id": str(result.run.id),
+                    "observed": result.run.counters.observed,
+                    "accepted": result.lead_count,
+                    "rejected": result.run.counters.rejected,
+                },
+            )
+            return job
+        except (ConfigurationError, WorkflowError, ValueError, OSError) as error:
+            job.update(status="failed", result={"message": str(error)})
+            raise HTTPException(422, str(error)) from error
+        finally:
+            lock.release()
 
     @app.get("/api/collection/campaigns")
     def list_campaigns(request: Request):
@@ -102,17 +183,3 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
             raise HTTPException(422, str(error)) from error
         finally:
             lock.release()
-
-
-COLLECTION_PANEL = """<section class="panel" id="profileCollection">
-<form id="collectForm" class="toolbar">
-<div class="search"><label for="collectUrl">Collect one profile</label><input id="collectUrl" type="url" required placeholder="https://www.linkedin.com/in/…"></div>
-<select id="collectCampaign" aria-label="Collection campaign" required><option value="">Choose campaign</option></select>
-<button class="btn primary" id="collectButton" type="submit">Collect profile</button>
-</form><p id="collectResult" role="status" style="padding:0 19px 14px;margin:0">Opens your local browser. Campaign matching applies. No outreach is sent.</p></section>"""
-
-COLLECTION_SCRIPT = """<script>
-const collectForm=document.getElementById('collectForm'),collectButton=document.getElementById('collectButton'),collectResult=document.getElementById('collectResult'),collectCampaign=document.getElementById('collectCampaign');
-fetch('/api/collection/campaigns').then(async r=>{if(!r.ok)throw Error('Cannot load campaigns');return r.json()}).then(items=>{for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;collectCampaign.appendChild(option)}if(!items.length){collectButton.disabled=true;collectResult.textContent='Add a version 2 campaign in config to collect profiles.'}}).catch(e=>{collectResult.textContent=e.message;collectButton.disabled=true});
-collectForm.onsubmit=async e=>{e.preventDefault();collectButton.disabled=true;collectResult.textContent='Reading profile in your local browser. Please leave it open…';try{const r=await fetch('/api/collection/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile_url:document.getElementById('collectUrl').value,campaign:collectCampaign.value})});const body=await r.json();if(!r.ok)throw Error(typeof body.detail==='string'?body.detail:'Check the profile URL and campaign');collectResult.textContent=`Completed: ${body.observed} profile read, ${body.accepted} accepted, ${body.rejected} rejected by campaign criteria. Report: ${body.report||'none'}. Run: ${body.run_id}`;await Promise.all([load(),loadSummary()])}catch(error){collectResult.textContent=error.message}finally{collectButton.disabled=false}};
-</script>"""

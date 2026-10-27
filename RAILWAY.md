@@ -14,12 +14,31 @@ which returns only a mode/status. The hosted factory always creates a separate
 SQLite database on its own volume and never uses an inherited database URL.
 Run one replica. Back up the volume/database before future schema changes.
 
-This deployment provides dashboard review, not cloud LinkedIn collection. The
-current collector requires a visible browser and manual sign-in. Browser outreach
-and queue endpoints are disabled in hosted mode, and send controls are hidden.
-Collection still runs locally. Completed version 2 runs can be explicitly synced
-with the command below. No cookies, credentials, browser profiles, local file paths,
-raw page snapshots, or existing outreach approvals are included in the payload.
+The dashboard's primary action is Search and fetch: choose a campaign and a
+profile limit. Railway queues the request; a local worker uses the saved LinkedIn
+browser session to search automatically and sync accepted profiles for cloud review.
+LinkedIn cookies and browser profiles stay on the worker computer. Browser outreach
+endpoints remain disabled in hosted mode, and send controls are hidden. No local
+file paths, raw page snapshots or existing outreach approvals are synced.
+
+## Hosted automatic search worker
+
+After completing manual sign-in, run this from the matching checkout with its
+local research database and browser profile configured:
+
+```powershell
+python -m linkedin_automation worker --url https://<dashboard-domain> --credentials-file .env.railway.local
+```
+
+Keep the worker running while using the live dashboard. The UI reports worker
+availability and queued/running/completed/failed searches. Requests survive Railway
+restarts in the dedicated `/data/search-jobs.sqlite3` database. One job runs at a
+time; queued or running jobs expire after 30 minutes without automatic replay.
+The worker accepts only matching local version 2 campaign definitions and bounded
+search limits (up to 25 profiles and 5 pages). The dashboard currently searches
+one page per request. `--once` checks for one job and exits. No profile URL is needed.
+Account visibility restrictions stop collection and are reported in the dashboard.
+The worker never sends outreach. Computer off or worker stopped means no collection.
 
 ## Local collection to hosted review
 
@@ -62,13 +81,10 @@ criteria, and exports locally. It does not upload, connect or message. A profile
 that fails the campaign criteria remains a rejected observation rather than a lead.
 Use a separate definition and report filename for technical tests.
 
-The local `python -m linkedin_automation review --port 8766` dashboard includes a
-Collect profile form when viewing all campaigns. Choose a configured version 2
-campaign and paste one normally accessible profile URL. Collection opens the
-local Chrome profile, applies campaign matching, saves accepted leads for review,
-and creates the local Excel report. Rejected profiles are counted in the result;
-they do not appear as accepted leads. Only one dashboard collection runs at a time.
-Run-specific review pages and the hosted app do not enable these endpoints.
+The local `python -m linkedin_automation review --port 8766` dashboard also uses
+Search and fetch when viewing all campaigns. It searches directly in the local
+Chrome profile, applies campaign matching and creates the local Excel report.
+Direct profile URLs remain an optional CLI diagnostic, outside the primary UI.
 
 Run from this checkout with the local research database configured:
 
@@ -86,7 +102,8 @@ profiles and 2 MiB. Redirects are refused so credentials are not forwarded.
 
 `POST /api/import/runs` accepts the versioned JSON run-transfer contract. It uses
 the same dashboard authentication and origin checks. Add `?dry_run=true` for
-validation only. The hosted dashboard does not initiate collection.
+validation only. Hosted search requests use separate authenticated `/api/search/*`
+endpoints; browser execution always runs on the local worker.
 
 ## Verification
 

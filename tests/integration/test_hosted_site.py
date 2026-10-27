@@ -26,8 +26,10 @@ def test_hosted_boundaries(monkeypatch, tmp_path: Path):
     app = create_hosted_app()
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
-        for path in ["/", "/api/leads", "/api/summary"]:
+        for path in ["/", "/api/leads", "/api/summary", "/api/search/settings"]:
             assert client.get(path).status_code == 401
+        for path in ["/api/search/jobs", "/api/search/claim", "/api/search/heartbeat"]:
+            assert client.post(path, json={}).status_code == 401
         assert client.get("/api/leads", auth=("reviewer", "wrong")).status_code == 401
         client.auth = ("reviewer", "test-password-at-least-24-characters")
         assert client.get("/api/leads").json() == []

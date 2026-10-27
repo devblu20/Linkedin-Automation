@@ -49,6 +49,9 @@ def create_hosted_app() -> FastAPI:
     os.environ["LINKEDIN_AUTOMATION_BROWSER_DATA"] = str(root / "browser-data")
     os.environ["LINKEDIN_AUTOMATION_SCREENSHOT_DIR"] = str(root / "screenshots")
     app = create_review_app(database)
+    from linkedin_automation.interfaces.search_jobs import install_hosted_search
+
+    install_hosted_search(app, root, Path("config"))
 
     @app.post("/api/import/runs")
     async def import_run(request: Request, dry_run: bool = False):
@@ -136,6 +139,12 @@ def create_hosted_app() -> FastAPI:
             start = body.index('<button class="btn" onclick="checkConnections()">')
             end = body.index('</div><div class="table-wrap">', start)
             body = body[:start] + body[end:]
+            from linkedin_automation.interfaces.search_ui import SEARCH_PANEL, SEARCH_SCRIPT
+
+            body = body.replace("<main>", "<main>" + SEARCH_PANEL, 1)
+            body = body.replace("</body>", SEARCH_SCRIPT + "</body>")
+            body = body.replace("Neon connected", "Hosted dashboard")
+            body = body.replace("London client pipeline", "LinkedIn research pipeline")
             body = body.replace("All Neon campaigns", "Hosted review · separate database")
             body = body.replace("Loading Neon leads", "Loading leads")
             body = body.replace(

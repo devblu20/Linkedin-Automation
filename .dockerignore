@@ -17,4 +17,7 @@ logs
 credentials*.json
 token*.json
 tests
+config/*.local.yaml
+DEPLOYMENT.json
+LIVE-VERIFICATION.txt
 .playwright-browsers

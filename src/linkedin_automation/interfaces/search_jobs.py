@@ -1,0 +1,248 @@
+"""Persistent search requests for the hosted dashboard and local browser worker."""
+
+import hashlib
+import json
+import secrets
+import sqlite3
+import time
+from contextlib import closing, contextmanager
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+
+from linkedin_automation.application.errors import ConfigurationError
+from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
+
+
+class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    campaign: str = Field(min_length=1, max_length=150)
+    max_results: int = Field(default=5, ge=1, le=25)
+    max_pages: int = Field(default=1, ge=1, le=5)
+
+
+class SearchCompletion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=48, max_length=48)
+    status: str = Field(pattern="^(completed|failed)$")
+    run_id: UUID | None = None
+    observed: int = Field(default=0, ge=0, le=25)
+    accepted: int = Field(default=0, ge=0, le=25)
+    rejected: int = Field(default=0, ge=0, le=25)
+    message: str = Field(default="", max_length=500)
+
+
+def definition_hash(definition) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def configured_campaigns(root: Path) -> dict:
+    result = {}
+    loader = YamlSearchDefinitionLoader()
+    root = root.resolve()
+    for path in sorted(root.glob("*.yaml")):
+        if path.resolve().parent != root or path.name.endswith(".local.yaml"):
+            continue
+        try:
+            definition = loader.load(path)
+            if definition.version == 2:
+                result[path.name] = definition
+        except ConfigurationError:
+            continue
+    return result
+
+
+class SearchJobs:
+    def __init__(self, path: Path):
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connection() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS search_jobs (
+                id TEXT PRIMARY KEY, campaign TEXT NOT NULL, name TEXT NOT NULL,
+                definition TEXT NOT NULL, base_hash TEXT NOT NULL,
+                status TEXT NOT NULL, token TEXT, created REAL NOT NULL,
+                started REAL, finished REAL, result TEXT)""")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS browser_worker (id INTEGER PRIMARY KEY, seen REAL)"
+            )
+
+    @contextmanager
+    def connection(self):
+        with closing(sqlite3.connect(self.path, timeout=15)) as db:
+            db.row_factory = sqlite3.Row
+            with db:
+                yield db
+
+    def enqueue(self, payload: SearchRequest, campaigns: dict) -> dict:
+        original = campaigns.get(payload.campaign)
+        if original is None:
+            raise ValueError("Choose a configured campaign")
+        if (
+            payload.max_results > original.limits.max_results
+            or payload.max_pages > original.limits.max_pages
+        ):
+            raise ValueError("Requested search exceeds this campaign's limits")
+        definition = original.model_copy(
+            update={
+                "limits": original.limits.model_copy(
+                    update={
+                        "max_results": payload.max_results,
+                        "max_pages": payload.max_pages,
+                    }
+                )
+            }
+        )
+        identifier = str(uuid4())
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.expire(db)
+            if db.execute(
+                "SELECT 1 FROM search_jobs WHERE status IN ('queued','running')"
+            ).fetchone():
+                raise ValueError("A search is already queued or running; wait for it to finish")
+            db.execute(
+                "INSERT INTO search_jobs (id,campaign,name,definition,base_hash,status,created) "
+                "VALUES (?,?,?,?,?,'queued',?)",
+                (
+                    identifier,
+                    payload.campaign,
+                    original.name,
+                    definition.model_dump_json(),
+                    definition_hash(original),
+                    time.time(),
+                ),
+            )
+        return {"id": identifier, "status": "queued", "campaign": original.name}
+
+    def expire(self, db):
+        cutoff = time.time() - 1800
+        db.execute(
+            "UPDATE search_jobs SET status='failed', finished=?, result=? "
+            "WHERE status IN ('queued','running') AND COALESCE(started,created) < ?",
+            (
+                time.time(),
+                json.dumps(
+                    {"message": "Search expired. Start the local browser worker and try again."}
+                ),
+                cutoff,
+            ),
+        )
+
+    def claim(self) -> dict | None:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR REPLACE INTO browser_worker (id,seen) VALUES (1,?)", (time.time(),)
+            )
+            self.expire(db)
+            if db.execute("SELECT 1 FROM search_jobs WHERE status='running'").fetchone():
+                return None
+            row = db.execute(
+                "SELECT * FROM search_jobs WHERE status='queued' ORDER BY created LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            token = secrets.token_hex(24)
+            db.execute(
+                "UPDATE search_jobs SET status='running',token=?,started=? WHERE id=?",
+                (token, time.time(), row["id"]),
+            )
+            return {
+                "id": row["id"],
+                "campaign": row["campaign"],
+                "base_hash": row["base_hash"],
+                "definition": json.loads(row["definition"]),
+                "token": token,
+            }
+
+    def complete(self, identifier: UUID, result: SearchCompletion) -> None:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM search_jobs WHERE id=?", (str(identifier),)).fetchone()
+            if (
+                row is None
+                or row["status"] != "running"
+                or not secrets.compare_digest(row["token"] or "", result.token)
+            ):
+                raise ValueError("Search is no longer running or claim token is invalid")
+            limits = json.loads(row["definition"])["limits"]
+            if (
+                result.observed > limits["max_results"]
+                or result.accepted + result.rejected > result.observed
+            ):
+                raise ValueError("Search counters exceed the requested limits")
+            values = result.model_dump(mode="json", exclude={"token"})
+            db.execute(
+                "UPDATE search_jobs SET status=?,finished=?,result=?,token=NULL WHERE id=?",
+                (result.status, time.time(), json.dumps(values), str(identifier)),
+            )
+
+    def status(self) -> dict:
+        with self.connection() as db:
+            self.expire(db)
+            worker = db.execute("SELECT seen FROM browser_worker WHERE id=1").fetchone()
+            rows = db.execute(
+                "SELECT id,name,status,created,result FROM search_jobs "
+                "ORDER BY created DESC LIMIT 10"
+            ).fetchall()
+            return {
+                "worker_online": bool(worker and time.time() - worker["seen"] < 45),
+                "jobs": [
+                    {
+                        "id": row["id"],
+                        "campaign": row["name"],
+                        "status": row["status"],
+                        "created": row["created"],
+                        "result": json.loads(row["result"]) if row["result"] else None,
+                    }
+                    for row in rows
+                ],
+            }
+
+
+def install_hosted_search(app: FastAPI, root: Path, config_dir: Path) -> None:
+    store = SearchJobs(root / "search-jobs.sqlite3")
+
+    @app.get("/api/search/settings")
+    def settings():
+        return {
+            "mode": "hosted",
+            "campaigns": [
+                {"id": key, "name": value.name}
+                for key, value in configured_campaigns(config_dir).items()
+            ],
+            **store.status(),
+        }
+
+    @app.post("/api/search/jobs")
+    def enqueue(payload: SearchRequest):
+        try:
+            return store.enqueue(payload, configured_campaigns(config_dir))
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/search/claim")
+    def claim():
+        return {"job": store.claim()}
+
+    @app.post("/api/search/heartbeat")
+    def heartbeat():
+        with store.connection() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO browser_worker (id,seen) VALUES (1,?)", (time.time(),)
+            )
+        return {"ok": True}
+
+    @app.post("/api/search/jobs/{identifier}/complete")
+    def complete(identifier: UUID, payload: SearchCompletion):
+        try:
+            store.complete(identifier, payload)
+            return {"ok": True}
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error

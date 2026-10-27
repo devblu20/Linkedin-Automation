@@ -54,7 +54,8 @@ def test_collection_matches_saves_reviews_and_reports(
         "linkedin_automation.interfaces.local_collection.DirectProfileCollector", Collector
     )
     with TestClient(local_app) as client:
-        assert "collectForm" in client.get("/").text
+        assert "searchForm" in client.get("/").text
+        assert 'id="collectUrl"' not in client.get("/").text
         assert [x["id"] for x in client.get("/api/collection/campaigns").json()] == [
             "campaign.yaml"
         ]

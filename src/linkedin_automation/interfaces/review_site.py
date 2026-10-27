@@ -104,13 +104,10 @@ def create_review_app(
         ):
             html = html.replace("${" + expression + "}", "${escapeHtml(" + expression + ")}")
         if local_collection:
-            from linkedin_automation.interfaces.local_collection import (
-                COLLECTION_PANEL,
-                COLLECTION_SCRIPT,
-            )
+            from linkedin_automation.interfaces.search_ui import SEARCH_PANEL, SEARCH_SCRIPT
 
-            html = html.replace("<main>", "<main>" + COLLECTION_PANEL, 1)
-            html = html.replace("</body>", COLLECTION_SCRIPT + "</body>")
+            html = html.replace("<main>", "<main>" + SEARCH_PANEL, 1)
+            html = html.replace("</body>", SEARCH_SCRIPT + "</body>")
             html = html.replace("All Neon campaigns", "Local research campaigns")
             html = html.replace("Neon connected", "Local research")
             html = html.replace("London client pipeline", "LinkedIn research pipeline")
