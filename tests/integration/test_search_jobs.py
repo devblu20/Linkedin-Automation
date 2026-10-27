@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from linkedin_automation.application.exceptions import LimitedVisibilityError
 from linkedin_automation.domain.models import CollectionBatch, LeadCandidate
 from linkedin_automation.infrastructure.search_worker import (
     DashboardClient,
@@ -74,7 +75,8 @@ def test_expired_jobs_fail_without_reexecution(tmp_path):
     assert jobs.status()["jobs"][0]["status"] == "failed"
 
 
-def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch):
+@pytest.mark.parametrize("outcome", ["matched", "empty", "restricted"])
+def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome):
     monkeypatch.setenv("DASHBOARD_USERNAME", "reviewer")
     monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password-at-least-24-characters")
     monkeypatch.setenv("HOSTED_DATA_DIR", str(tmp_path / "cloud"))
@@ -90,6 +92,10 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch):
 
         def collect(self, definition, **kwargs):
             assert definition.limits.max_results == 1
+            if outcome == "restricted":
+                raise LimitedVisibilityError("Restricted profile")
+            if outcome == "empty":
+                return CollectionBatch((), checkpoint_page=1, complete=True)
             candidate = LeadCandidate(
                 profile_url="https://www.linkedin.com/in/example/",
                 full_name="Example Founder",
@@ -123,11 +129,14 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch):
         monkeypatch.setattr("linkedin_automation.infrastructure.search_worker.sync_transfer", sync)
         run_worker(client, Path("config"), once=True)
         state = http.get("/api/search/settings").json()
-        assert state["jobs"][0]["status"] == "completed"
-        assert state["jobs"][0]["result"]["accepted"] == 1
+        assert state["jobs"][0]["status"] == ("failed" if outcome == "restricted" else "completed")
+        assert state["jobs"][0]["result"]["accepted"] == int(outcome == "matched")
         leads = http.get("/api/leads").json()
-        assert leads[0]["lead"]["full_name"] == "Example Founder"
-        assert leads[0]["outreach"]["status"] == "needs_verification"
+        if outcome == "matched":
+            assert leads[0]["lead"]["full_name"] == "Example Founder"
+            assert leads[0]["outreach"]["status"] == "needs_verification"
+        else:
+            assert leads == []
 
 
 @pytest.mark.parametrize(
