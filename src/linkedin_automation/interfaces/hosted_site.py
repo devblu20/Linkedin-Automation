@@ -49,7 +49,7 @@ def create_hosted_app() -> FastAPI:
     os.environ["LINKEDIN_AUTOMATION_ARTIFACT_DIR"] = str(root / "artifacts")
     os.environ["LINKEDIN_AUTOMATION_BROWSER_DATA"] = str(root / "browser-data")
     os.environ["LINKEDIN_AUTOMATION_SCREENSHOT_DIR"] = str(root / "screenshots")
-    app = create_review_app(database)
+    app = create_review_app(database, review_only=True)
     from linkedin_automation.interfaces.search_jobs import install_hosted_search
 
     install_hosted_search(app, root, Path("config"))

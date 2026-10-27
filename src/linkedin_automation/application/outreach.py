@@ -10,7 +10,7 @@ from linkedin_automation.application.ports.repository import ResearchRepository
 from linkedin_automation.domain.enums import OutreachStatus
 from linkedin_automation.domain.models import Lead, OutreachRecord
 from linkedin_automation.domain.search_definition import SearchDefinition
-from linkedin_automation.domain.services import qualify_outreach_record
+from linkedin_automation.domain.services import qualification_assessment, qualify_outreach_record
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +35,49 @@ class OutreachReview:
             if record.lead_id in leads
         ]
 
+    def assessment(self, lead_id: UUID, values: dict | None = None) -> dict:
+        lead = self._repository.get_lead(lead_id)
+        record = self._repository.get_outreach(lead_id)
+        if lead is None or record is None:
+            raise RunNotFoundError(f"outreach lead not found: {lead_id}")
+        run = self._repository.get_run(lead.run_id)
+        if run is None:
+            raise RunNotFoundError(f"run not found: {lead.run_id}")
+        definition = SearchDefinition.model_validate_json(run.definition_json)
+        supplied = (
+            values
+            if values is not None
+            else {
+                "firm_type": record.firm_type,
+                "funds_gbp": record.funds_gbp,
+                "fund_evidence_url": record.fund_evidence_url,
+            }
+        )
+        result = qualification_assessment(
+            lead,
+            definition,
+            **{key: supplied[key] for key in ("firm_type", "funds_gbp", "fund_evidence_url")},
+        )
+        return {
+            **result,
+            "lead_id": str(lead_id),
+            "campaign": run.search_name,
+            "status": record.status.value,
+            "matched_criteria": list(lead.evidence.matched),
+            "missing_fields": [
+                label
+                for label, value in (
+                    ("Company", lead.company),
+                    ("Current role", lead.current_title),
+                    ("Industry", lead.industry),
+                    ("About", lead.about),
+                    ("Experience", lead.experience),
+                )
+                if not value
+            ],
+            "can_approve": not result["blockers"],
+        }
+
     def update(
         self,
         lead_id: UUID,
@@ -58,6 +101,7 @@ class OutreachReview:
         updated = qualify_outreach_record(
             record,
             definition,
+            lead=lead,
             firm_type=firm_type,
             funds_gbp=funds_gbp,
             fund_evidence_url=fund_evidence_url,

@@ -142,6 +142,7 @@ def test_strict_bluqq_matching_and_evidence_gated_outreach() -> None:
         qualify_outreach_record(
             record,
             definition,
+            lead=lead,
             firm_type="family office",
             funds_gbp=None,
             fund_evidence_url="",
@@ -153,6 +154,7 @@ def test_strict_bluqq_matching_and_evidence_gated_outreach() -> None:
     approved = qualify_outreach_record(
         record,
         definition,
+        lead=lead,
         firm_type="family office",
         funds_gbp=1_000_000,
         fund_evidence_url="https://example.com/funds",
@@ -166,6 +168,7 @@ def test_strict_bluqq_matching_and_evidence_gated_outreach() -> None:
         qualify_outreach_record(
             approved,
             definition,
+            lead=lead,
             firm_type=approved.firm_type,
             funds_gbp=approved.funds_gbp,
             fund_evidence_url=approved.fund_evidence_url,

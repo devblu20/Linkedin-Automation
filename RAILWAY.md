@@ -171,6 +171,35 @@ API. Keep backups on its own volume and never operate on another service's data.
 
 ## Verification
 
+### Qualification review
+
+**Review** opens the original run's qualification rules, score breakdown,
+matching evidence and missing profile data. Form changes update a read-only
+preview; only **Save client** writes the decision and drafts. Approval requires
+an allowed firm type, the configured score and any required minimum-funds amount
+with a valid HTTP(S) source URL. Sources are supplied and checked by the reviewer;
+the app does not independently verify the financial claim.
+
+Scores are recomputed from profile evidence on each save, rather than adjusted
+from a previous score. A search match is not an approved customer. The Qualified
+metric counts approved leads and later outreach states, excluding ready-for-review.
+The hosted editor accepts only needs-verification, ready-for-review, approved and
+rejected; it cannot manufacture sent or connected states. No approval sends outreach.
+These changes require no database migration and do not rewrite existing reviews.
+
+On Windows, start the local worker independently of a foreground terminal:
+
+```powershell
+.\scripts\start-browser-worker.ps1
+```
+
+The launcher avoids starting a duplicate for this dashboard, keeps credentials
+out of command output and writes local logs under `data/worker-logs`. It does not
+install a startup task. The computer must stay awake and online; after a reboot,
+start it again. LinkedIn sign-in/security challenges still require manual action.
+Pass `-PythonPath` if Python is not installed in this checkout's or its parent's
+`.venv`. Keep the saved browser profile and credentials file local.
+
 - Without credentials, `/` and `/api/leads` return 401.
 - `/healthz` returns 200 without exposing database or credentials.
 - Correct credentials open the dashboard; send actions return 409.

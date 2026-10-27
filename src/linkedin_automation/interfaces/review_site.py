@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from linkedin_automation.application.exceptions import RunNotFoundError
 from linkedin_automation.application.outbound import OutboundOutreach
 from linkedin_automation.application.outreach import OutreachReview
 from linkedin_automation.domain.enums import OutreachStatus
@@ -30,12 +31,12 @@ class ReviewUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    firm_type: str = ""
+    firm_type: str = Field(default="", max_length=120)
     funds_gbp: int | None = Field(default=None, ge=0)
-    fund_evidence_url: str = ""
-    fund_evidence_notes: str = ""
-    connection_message: str = ""
-    follow_up_message: str = ""
+    fund_evidence_url: str = Field(default="", max_length=2048)
+    fund_evidence_notes: str = Field(default="", max_length=10000)
+    connection_message: str = Field(default="", max_length=5000)
+    follow_up_message: str = Field(default="", max_length=10000)
     status: OutreachStatus
 
 
@@ -52,6 +53,7 @@ def create_review_app(
     *,
     enable_collection: bool = False,
     config_dir: Path | None = None,
+    review_only: bool = False,
 ) -> FastAPI:
     """Create a local review application for all leads or one research run."""
     repository = DatabaseResearchRepository(database_url)
@@ -104,10 +106,15 @@ def create_review_app(
 
         html = html.replace(
             '<section class="panel"><div class="toolbar">',
-            OBSERVATION_PANEL + '<section class="panel"><h2 style="padding:16px 19px 0;margin:0;font-size:17px">Saved leads for review</h2><div class="toolbar">',
+            OBSERVATION_PANEL
+            + '<section class="panel"><h2 style="padding:16px 19px 0;margin:0;font-size:17px">Saved leads for review</h2><div class="toolbar">',
             1,
         )
         html = html.replace("</body>", OBSERVATION_SCRIPT + "</body>")
+        from linkedin_automation.interfaces.qualification_review import QUALIFICATION_SCRIPT
+
+        html = html.replace("</body>", QUALIFICATION_SCRIPT + "</body>")
+        html = html.replace("__REVIEW_ONLY__", "true" if review_only else "false")
         for expression in (
             "initials(l.full_name)",
             "l.full_name",
@@ -146,7 +153,12 @@ def create_review_app(
         return {
             "fetched": len(review.list(run_id)),
             "qualified": sum(
-                s not in {OutreachStatus.NEEDS_VERIFICATION, OutreachStatus.REJECTED}
+                s
+                not in {
+                    OutreachStatus.NEEDS_VERIFICATION,
+                    OutreachStatus.REJECTED,
+                    OutreachStatus.READY_FOR_REVIEW,
+                }
                 for s in statuses
             ),
             "connection_sent": sum(
@@ -206,10 +218,38 @@ def create_review_app(
         except Exception as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    def ensure_review_scope(lead_id: UUID):
+        lead = repository.get_lead(lead_id)
+        if lead is None or (run_id is not None and lead.run_id != run_id):
+            raise HTTPException(404, "Lead not found in this review")
+
+    @app.get("/api/leads/{lead_id}/qualification")
+    def qualification(lead_id: UUID):
+        ensure_review_scope(lead_id)
+        return review.assessment(lead_id)
+
+    @app.post("/api/leads/{lead_id}/qualification")
+    def preview_qualification(lead_id: UUID, payload: ReviewUpdate):
+        ensure_review_scope(lead_id)
+        return review.assessment(lead_id, payload.model_dump())
+
     @app.put("/api/leads/{lead_id}")
     def update_lead(lead_id: UUID, payload: ReviewUpdate) -> dict[str, object]:
+        ensure_review_scope(lead_id)
+        if review_only and payload.status not in {
+            OutreachStatus.NEEDS_VERIFICATION,
+            OutreachStatus.READY_FOR_REVIEW,
+            OutreachStatus.APPROVED,
+            OutreachStatus.REJECTED,
+        }:
+            raise HTTPException(
+                422,
+                "Choose a review status; sending and connection states require actual outreach actions",
+            )
         try:
             updated = review.update(lead_id, **payload.model_dump())
+        except RunNotFoundError as error:
+            raise HTTPException(404, "Lead not found") from error
         except (LeadProcessingError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         refresh_excel()
