@@ -234,3 +234,33 @@ def main() -> None:
     """Configure process logging and run the CLI."""
     configure_logging()
     app()
+
+
+@app.command("sync")
+def sync_run(
+    run_id: Annotated[UUID, typer.Argument(help="Completed local research run to sync.")],
+    url: Annotated[str, typer.Option(help="Destination dashboard HTTPS origin.")],
+    credentials_file: Annotated[Path, typer.Option(help="Local dashboard credentials file.")],
+    dry_run: Annotated[bool, typer.Option(help="Validate remotely without saving leads.")] = False,
+) -> None:
+    """Upload accepted profiles; cloud approvals/drafts are never overwritten."""
+    from dotenv import dotenv_values
+
+    from linkedin_automation.application.run_transfer import export_transfer
+    from linkedin_automation.infrastructure.run_sync import sync_transfer
+
+    try:
+        settings = RuntimeSettings.from_environment()
+        with closing(DatabaseResearchRepository(settings.database_url)) as repository:
+            run = repository.get_run(run_id)
+            if run is None:
+                raise ValueError("Local run not found")
+            payload = export_transfer(run, repository.list_leads(run_id))
+        credentials = dotenv_values(credentials_file)
+        result = sync_transfer(
+            payload, url, credentials.get("DASHBOARD_USERNAME") or "",
+            credentials.get("DASHBOARD_PASSWORD") or "", dry_run=dry_run,
+        )
+    except (ValueError, OSError) as error:
+        _fail(error)
+    typer.echo(result)

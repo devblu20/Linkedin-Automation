@@ -44,3 +44,6 @@ Thumbs.db
 .fixed-pipeline-tests/
 .hosted-test-temp/
 .test-temp/
+.sync-test-temp/
+.sync-test-temp-2/
+.playwright-browsers/

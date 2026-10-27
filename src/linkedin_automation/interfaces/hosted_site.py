@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import os
 import secrets
 from pathlib import Path
@@ -11,7 +12,15 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 
+from linkedin_automation.application.run_transfer import (
+    MAX_TRANSFER_BYTES,
+    RunTransfer,
+    prepare_transfer,
+)
+from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.interfaces.review_site import create_review_app
 
 _BROWSER_ACTIONS = {
@@ -40,6 +49,38 @@ def create_hosted_app() -> FastAPI:
     os.environ["LINKEDIN_AUTOMATION_BROWSER_DATA"] = str(root / "browser-data")
     os.environ["LINKEDIN_AUTOMATION_SCREENSHOT_DIR"] = str(root / "screenshots")
     app = create_review_app(database)
+
+    @app.post("/api/import/runs")
+    async def import_run(request: Request, dry_run: bool = False):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_TRANSFER_BYTES:
+                return JSONResponse({"detail": "Import exceeds the 2 MiB limit"}, status_code=413)
+        try:
+            payload = RunTransfer.model_validate_json(bytes(body))
+            run, rows = prepare_transfer(payload)
+            if dry_run:
+                return {"run_id": str(run.id), "validated": len(rows), "dry_run": True}
+            repository = DatabaseResearchRepository(database)
+            try:
+                inserted, skipped = repository.import_review_run(run, rows)
+            finally:
+                repository.close()
+            return {"run_id": str(run.id), "inserted": inserted, "skipped": skipped}
+        except ValidationError as error:
+            return JSONResponse(
+                {"detail": json.loads(error.json(include_input=False, include_context=False))},
+                status_code=422,
+            )
+        except (ValueError, KeyError):
+            return JSONResponse(
+                {"detail": "Invalid profiles or campaign settings"}, status_code=422
+            )
+        except IntegrityError:
+            return JSONResponse(
+                {"detail": "Conflicting import; retry the same run"}, status_code=409
+            )
 
     @app.get("/healthz", include_in_schema=False)
     def health() -> dict[str, str]:
@@ -116,6 +157,7 @@ return String(v??'').replace(/[&<>\"']/g,c=>entities[c]);
             for old, new in {
                 "${initials(l.full_name)}": "${escapeHtml(initials(l.full_name))}",
                 "${l.full_name}": "${escapeHtml(l.full_name)}",
+                "${l.profile_url}": "${escapeHtml(l.profile_url)}",
                 "${l.current_title||l.headline||'Title unavailable'}": (
                     "${escapeHtml(l.current_title||l.headline||'Title unavailable')}"
                 ),

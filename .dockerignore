@@ -16,3 +16,4 @@ logs
 credentials*.json
 token*.json
 tests
+.playwright-browsers

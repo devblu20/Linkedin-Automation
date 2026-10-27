@@ -377,6 +377,44 @@ class DatabaseResearchRepository:
             session.commit()
             return inserted
 
+    def import_review_run(
+        self, run: ResearchRun, rows: list[tuple[Lead, OutreachRecord]]
+    ) -> tuple[int, int]:
+        """Atomically add profiles; repeated imports never overwrite cloud review work."""
+        inserted = skipped = 0
+        with Session(self._engine) as session, session.begin():
+            current = session.get(RunRow, str(run.id))
+            if current is not None and current.definition_hash != run.definition_hash:
+                raise ValueError("Run ID already exists with different campaign settings")
+            if current is None:
+                current = self._new_run_row(run)
+                session.add(current)
+                session.flush()
+            for lead, record in rows:
+                existing = session.scalar(select(LeadRow).where(
+                    LeadRow.run_id == str(run.id), LeadRow.profile_url == lead.profile_url
+                ))
+                if existing is not None:
+                    skipped += 1
+                    continue
+                session.add(self._new_lead_row(lead))
+                session.flush()
+                session.add(OutreachRow(
+                    lead_id=str(lead.id), run_id=str(run.id), firm_type=record.firm_type,
+                    funds_gbp=None, fund_evidence_url="", fund_evidence_notes="",
+                    score=record.score, status=record.status.value,
+                    connection_message=record.connection_message,
+                    follow_up_message=record.follow_up_message, updated_at=record.updated_at,
+                ))
+                inserted += 1
+            session.flush()
+            total = session.scalar(select(func.count()).select_from(LeadRow).where(
+                LeadRow.run_id == str(run.id)
+            )) or 0
+            current.observed = current.accepted = int(total)
+            current.updated_at = run.updated_at
+        return inserted, skipped
+
     def list_leads(self, run_id: UUID | None = None) -> list[Lead]:
         with Session(self._engine) as session:
             statement = select(LeadRow)
