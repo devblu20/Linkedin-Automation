@@ -23,6 +23,7 @@ config/*.local.yaml
 # Future runtime data
 artifacts/
 browser-data/
+browser-data-*/
 *.db
 *.sqlite
 *.sqlite3

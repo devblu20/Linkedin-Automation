@@ -1,6 +1,7 @@
 """Typer command-line interface for Phase 1 configuration validation."""
 
 import logging
+import os
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -73,6 +74,7 @@ def _workflow(*, with_storage: bool = False) -> ResearchWorkflow:
         collector=PlaywrightLinkedInCollector(
             browser_data_dir=settings.browser_data_dir,
             screenshot_dir=settings.screenshot_dir,
+            browser_channel=os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL") or None,
         ),
         reporter=ExcelReportWriter(settings.artifact_dir),
         storage=storage,
@@ -236,6 +238,33 @@ def main() -> None:
     app()
 
 
+@app.command("login")
+def login_browser(
+    timeout_minutes: Annotated[int, typer.Option(min=1, max=60)] = 20,
+) -> None:
+    """Keep a separate manual sign-in window open; do not run collection."""
+    from linkedin_automation.infrastructure.browser.manual_login import manual_login
+
+    settings = RuntimeSettings.from_environment()
+    typer.echo("Manual login window: no search, collection or sending will run.")
+    typer.echo(
+        "Finish LinkedIn sign-in yourself. "
+        f"The window stays open for up to {timeout_minutes} minutes."
+    )
+    try:
+        verified = manual_login(
+            settings.browser_data_dir,
+            timeout_seconds=timeout_minutes * 60,
+            channel=os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL") or "chrome",
+            on_verified=lambda: typer.echo(
+                "LinkedIn sign-in detected. Window stays open; close it yourself, then say done."
+            ),
+        )
+    except (ValueError, OSError) as error:
+        _fail(error)
+    typer.echo("Session closed. Sign-in detected: " + ("yes" if verified else "not yet"))
+
+
 @app.command("sync")
 def sync_run(
     run_id: Annotated[UUID, typer.Argument(help="Completed local research run to sync.")],
@@ -258,8 +287,11 @@ def sync_run(
             payload = export_transfer(run, repository.list_leads(run_id))
         credentials = dotenv_values(credentials_file)
         result = sync_transfer(
-            payload, url, credentials.get("DASHBOARD_USERNAME") or "",
-            credentials.get("DASHBOARD_PASSWORD") or "", dry_run=dry_run,
+            payload,
+            url,
+            credentials.get("DASHBOARD_USERNAME") or "",
+            credentials.get("DASHBOARD_PASSWORD") or "",
+            dry_run=dry_run,
         )
     except (ValueError, OSError) as error:
         _fail(error)

@@ -10,6 +10,7 @@ __pycache__
 *.xlsx
 data
 browser-data
+browser-data-*
 artifacts
 screenshots
 logs

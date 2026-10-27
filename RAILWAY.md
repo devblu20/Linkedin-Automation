@@ -23,6 +23,33 @@ raw page snapshots, or existing outreach approvals are included in the payload.
 
 ## Local collection to hosted review
 
+For manual sign-in, use a separate local Chrome profile and keep the same profile
+for subsequent collection:
+
+```powershell
+$env:LINKEDIN_AUTOMATION_BROWSER_DATA = Join-Path (Get-Location) 'browser-data-chrome'
+$env:LINKEDIN_AUTOMATION_BROWSER_CHANNEL = 'chrome'
+python -m linkedin_automation login
+```
+
+Complete LinkedIn sign-in and any verification manually, then close that browser
+window before starting or resuming collection. The login command keeps the window
+open after detecting sign-in, for up to 20 minutes by default. It does not collect
+profiles or send outreach. Browser profiles must remain local and uncommitted.
+
+If search results show only "LinkedIn Member" and View reports that profiles are
+outside your network, those identities are unavailable to this account. A search
+can explicitly narrow its scope using the optional YAML field:
+
+```yaml
+search:
+  connection_degrees: [1st, 2nd]
+```
+
+Keep the other search fields in place. The default is unrestricted search; this
+filter is never added automatically to an existing campaign. It cannot grant
+access to restricted profiles, and a narrowly filtered search may return no leads.
+
 Run from this checkout with the local research database configured:
 
 ```powershell

@@ -1,6 +1,7 @@
 """Offline tests for LinkedIn query construction, parsing, and safety stops."""
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -60,6 +61,19 @@ def test_builds_single_term_search_url() -> None:
     url = build_people_search_url(definition, 1, search_term="family office")
     assert "keywords=family+office" in url
     assert "+OR+" not in url
+
+
+def test_optional_connection_filter_is_explicit_and_deduplicated() -> None:
+    definition = YamlSearchDefinitionLoader().load(Path("config/search.example.yaml"))
+    data = definition.model_dump()
+    data["search"]["connection_degrees"] = ["1st", "2nd", "1st"]
+    filtered = type(definition).model_validate(data)
+    query = parse_qs(urlsplit(build_people_search_url(filtered, 1)).query)
+    assert query["network"] == ['["F","S"]']
+    assert definition.search.connection_degrees == []
+    data["search"]["connection_degrees"] = ["4th"]
+    with pytest.raises(ValueError):
+        type(definition).model_validate(data)
 
 
 def test_recognizes_normal_empty_results_page() -> None:

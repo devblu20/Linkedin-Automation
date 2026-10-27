@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -62,6 +63,11 @@ def build_people_search_url(
     )
     if geo_urns:
         parameters["geoUrn"] = f'["{geo_urns[0]}"]'
+    if search.connection_degrees:
+        network_codes = {"1st": "F", "2nd": "S", "3rd": "O"}
+        parameters["network"] = json.dumps(
+            [network_codes[degree] for degree in search.connection_degrees], separators=(",", ":")
+        )
     query = urlencode(parameters)
     return f"{_BASE_SEARCH_URL}?{query}"
 
@@ -368,6 +374,7 @@ class PlaywrightLinkedInCollector:
         navigation_timeout_ms: int = 30_000,
         authentication_timeout_ms: int = 300_000,
         headless: bool = False,
+        browser_channel: str | None = None,
     ) -> None:
         if min_delay_seconds < 0 or max_delay_seconds < min_delay_seconds:
             raise ValueError("browser delay range is invalid")
@@ -378,6 +385,9 @@ class PlaywrightLinkedInCollector:
         self._timeout = navigation_timeout_ms
         self._authentication_timeout = authentication_timeout_ms
         self._headless = headless
+        if browser_channel not in {None, "chrome", "msedge"}:
+            raise ValueError("browser_channel must be chrome or msedge")
+        self._browser_channel = browser_channel
 
     def collect(
         self, definition: SearchDefinition, *, start_page: int = 1, dry_run: bool = False
@@ -396,7 +406,7 @@ class PlaywrightLinkedInCollector:
         search_steps = build_people_search_steps(definition)
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
-                str(self._browser_data_dir), headless=self._headless
+                str(self._browser_data_dir), headless=self._headless, channel=self._browser_channel
             )
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(self._timeout)
@@ -529,9 +539,10 @@ class PlaywrightLinkedInCollector:
                                 break
                             if is_limited_search_results(html):
                                 raise LimitedVisibilityError(
-                                    "LinkedIn is hiding profile names and URLs because this "
-                                    "account reached its search visibility limit; no valid "
-                                    "profiles are available to save"
+                                    "LinkedIn search results do not expose usable names or "
+                                    "profile URLs. Try search.connection_degrees: [1st, 2nd] "
+                                    "to search within your network, or review accessible "
+                                    "profiles manually. Restricted profiles cannot be collected"
                                 )
                             if page.get_by_text("LinkedIn Member", exact=True).count():
                                 logger.info(

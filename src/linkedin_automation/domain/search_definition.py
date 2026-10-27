@@ -59,6 +59,7 @@ class SearchCriteria(StrictModel):
     locations: list[CleanString] = Field(default_factory=list)
     industries: list[CleanString] = Field(default_factory=list)
     companies: list[CleanString] = Field(default_factory=list)
+    connection_degrees: list[Literal["1st", "2nd", "3rd"]] = Field(default_factory=list)
     keywords: IncludeExcludeCriteria = Field(default_factory=IncludeExcludeCriteria)
     required_dimensions: list[
         Literal["titles", "locations", "industries", "companies", "keywords"]
@@ -69,7 +70,7 @@ class SearchCriteria(StrictModel):
     def normalize_values(cls, values: list[str]) -> list[str]:
         return _normalize_unique_values(values)
 
-    @field_validator("required_dimensions", mode="after")
+    @field_validator("required_dimensions", "connection_degrees", mode="after")
     @classmethod
     def normalize_required_dimensions(cls, values: list[str]) -> list[str]:
         return list(dict.fromkeys(values))
