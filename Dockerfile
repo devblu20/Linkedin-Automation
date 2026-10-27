@@ -4,6 +4,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
+COPY alembic.ini ./
+COPY migrations ./migrations
 RUN pip install .
 EXPOSE 8000
 CMD ["python", "-m", "linkedin_automation.interfaces.hosted_site"]

@@ -17,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    inspect,
     select,
     text,
 )
@@ -258,9 +259,26 @@ class DatabaseResearchRepository:
         self._engine = create_engine(self._database_url, pool_pre_ping=True, poolclass=NullPool)
 
     def initialize(self) -> None:
+        inspector = inspect(self._engine)
+        tables = set(inspector.get_table_names()) - {"alembic_version"}
+        if tables:
+            # create_all does not add columns to existing tables. Never mark a
+            # partial/old schema current merely because missing tables were created.
+            complete = all(
+                table.name in tables
+                and set(table.columns.keys()).issubset(
+                    {column["name"] for column in inspector.get_columns(table.name)}
+                )
+                for table in Base.metadata.sorted_tables
+            )
+            if not complete:
+                raise RuntimeError(
+                    "Database schema needs an upgrade. Back up the database and run "
+                    "alembic upgrade head with LINKEDIN_AUTOMATION_MIGRATION_URL set."
+                )
         Base.metadata.create_all(self._engine)
-        # Databases bootstrapped by the local app represent the initial migration revision.
-        # Recording it keeps later Alembic upgrades compatible with automatic local setup.
+        # This metadata includes every column through migration 0004. Earlier
+        # releases incorrectly stamped a complete bootstrap as 0003.
         with self._engine.begin() as connection:
             connection.execute(
                 text(
@@ -271,10 +289,10 @@ class DatabaseResearchRepository:
             current = connection.scalar(text("SELECT version_num FROM alembic_version LIMIT 1"))
             if current is None:
                 connection.execute(
-                    text("INSERT INTO alembic_version (version_num) VALUES ('0003')")
+                    text("INSERT INTO alembic_version (version_num) VALUES ('0004')")
                 )
-            elif current in {"0001", "0002"}:
-                connection.execute(text("UPDATE alembic_version SET version_num = '0003'"))
+            elif current in {"0001", "0002", "0003"}:
+                connection.execute(text("UPDATE alembic_version SET version_num = '0004'"))
 
     def database_location(self) -> str:
         """Return a password-safe description of the configured database."""

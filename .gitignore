@@ -38,3 +38,9 @@ data/
 !.vscode/tasks.json
 .DS_Store
 Thumbs.db
+
+# Local verification databases and pytest work directories
+.pipeline-test-temp/
+.fixed-pipeline-tests/
+.hosted-test-temp/
+.test-temp/

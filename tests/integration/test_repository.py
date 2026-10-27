@@ -18,7 +18,7 @@ def test_persists_runs_and_deduplicates_leads(tmp_path: Path) -> None:
     repository.initialize()
     definition = YamlSearchDefinitionLoader().load(Path("config/search.example.yaml"))
     run = ResearchRun.create(
-        search_name=definition.name, 
+        search_name=definition.name,
         schema_version=1,
         definition_json=definition.model_dump_json(),
         definition_hash="a" * 64,
@@ -56,8 +56,7 @@ def test_persists_runs_and_deduplicates_leads(tmp_path: Path) -> None:
     assert leads[0].company == "Lab"
     inspection_engine = create_engine(f"sqlite:///{database.as_posix()}")
     with inspection_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
     inspection_engine.dispose()
     repository.close()
     reopened.close()
-  

@@ -78,4 +78,4 @@ def test_reviews_evidence_and_connection_lifecycle(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json()[0]["lead"]["full_name"] == "Alex Founder"
         assert "All Neon campaigns" in client.get("/").text
-        assert "Post-connection message" in dashboard.text
+        assert "Follow-up message" in dashboard.text
