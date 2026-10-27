@@ -50,6 +50,18 @@ Keep the other search fields in place. The default is unrestricted search; this
 filter is never added automatically to an existing campaign. It cannot grant
 access to restricted profiles, and a narrowly filtered search may return no leads.
 
+To verify a known accessible profile using the same local database, matching and
+Excel report pipeline:
+
+```powershell
+python -m linkedin_automation profile https://www.linkedin.com/in/<profile>/ config/<search>.yaml
+```
+
+This command reads one visibly accessible profile, applies the supplied search
+criteria, and exports locally. It does not upload, connect or message. A profile
+that fails the campaign criteria remains a rejected observation rather than a lead.
+Use a separate definition and report filename for technical tests.
+
 Run from this checkout with the local research database configured:
 
 ```powershell

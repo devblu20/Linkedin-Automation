@@ -12,6 +12,7 @@ from sqlalchemy.engine import make_url
 
 from linkedin_automation.application.errors import ConfigurationError
 from linkedin_automation.application.exceptions import StorageError, WorkflowError
+from linkedin_automation.application.ports import LeadCollector
 from linkedin_automation.application.validate_search import ValidateSearchDefinition
 from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
@@ -57,7 +58,7 @@ def validate(
     typer.echo(f"Daily limit: {summary.max_daily_results} results")
 
 
-def _workflow(*, with_storage: bool = False) -> ResearchWorkflow:
+def _workflow(*, with_storage: bool = False, profile_url: str | None = None) -> ResearchWorkflow:
     settings = RuntimeSettings.from_environment()
     storage = None
     if with_storage:
@@ -68,14 +69,23 @@ def _workflow(*, with_storage: bool = False) -> ResearchWorkflow:
         storage = GoogleDriveStorage.from_oauth(
             settings.google_credentials_path, settings.google_token_path
         )
+    collector: LeadCollector = PlaywrightLinkedInCollector(
+        browser_data_dir=settings.browser_data_dir,
+        screenshot_dir=settings.screenshot_dir,
+        browser_channel=os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL") or None,
+    )
+    if profile_url is not None:
+        from linkedin_automation.infrastructure.browser.direct_profile import DirectProfileCollector
+
+        collector = DirectProfileCollector(
+            profile_url,
+            settings.browser_data_dir,
+            os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL") or "chrome",
+        )
     return ResearchWorkflow(
         loader=YamlSearchDefinitionLoader(),
         repository=DatabaseResearchRepository(settings.database_url),
-        collector=PlaywrightLinkedInCollector(
-            browser_data_dir=settings.browser_data_dir,
-            screenshot_dir=settings.screenshot_dir,
-            browser_channel=os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL") or None,
-        ),
+        collector=collector,
         reporter=ExcelReportWriter(settings.artifact_dir),
         storage=storage,
     )
@@ -138,6 +148,21 @@ def resume(
     typer.echo(f"Status: {result.run.status.value}")
     typer.echo(f"Profiles observed: {result.run.counters.observed}")
     typer.echo(f"Qualified leads: {result.lead_count}")
+
+
+@app.command("profile")
+def collect_profile(profile_url: str, search_file: Path) -> None:
+    """Read one supplied profile locally; apply the configured criteria and export."""
+    try:
+        with closing(_workflow(profile_url=profile_url)) as workflow:
+            result = workflow.start(search_file, dry_run=False, upload=False)
+    except (ConfigurationError, WorkflowError, ValueError, OSError) as error:
+        _fail(error)
+    typer.echo(f"Run ID: {result.run.id}")
+    typer.echo(f"Status: {result.run.status.value}")
+    typer.echo(f"Profiles observed: {result.run.counters.observed}")
+    typer.echo(f"Qualified leads: {result.lead_count}")
+    typer.echo(f"Report: {result.run.report_path}")
 
 
 @app.command()

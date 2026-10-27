@@ -313,7 +313,18 @@ def extract_visible_profile(page: object, candidate: LeadCandidate) -> LeadCandi
     """Capture signed-in, visibly rendered profile fields without accessing hidden data."""
     main = page.locator("main").first  # type: ignore[attr-defined]
     snapshot = main.inner_text(timeout=15_000)[:50_000]
-    headings = ("experience", "education", "skills", "recommendations", "interests", "activity")
+    headings = (
+        "experience",
+        "education",
+        "skills",
+        "recommendations",
+        "interests",
+        "activity",
+        "accessibility",
+        "talent solutions",
+        "community guidelines",
+        "questions?",
+    )
     about = " ".join(_profile_section(snapshot, "About", headings))
     experience = _profile_section(snapshot, "Experience", headings)
     education = _profile_section(snapshot, "Education", headings)
