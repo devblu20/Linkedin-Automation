@@ -58,6 +58,23 @@ def configured_campaigns(root: Path) -> dict:
     return result
 
 
+def campaign_options(root: Path) -> list[dict]:
+    options = []
+    for key, definition in configured_campaigns(root).items():
+        search = definition.search
+        keywords = ", ".join(search.keywords.include[:3]) or "Campaign keywords"
+        locations = ", ".join(search.locations) or "Any location"
+        titles = ", ".join(search.titles.include[:3]) or "Any title"
+        options.append(
+            {
+                "id": key,
+                "name": definition.name,
+                "criteria": f"Search: {keywords} · Location: {locations} · Titles: {titles}",
+            }
+        )
+    return options
+
+
 class SearchJobs:
     def __init__(self, path: Path):
         self.path = path
@@ -213,10 +230,7 @@ def install_hosted_search(app: FastAPI, root: Path, config_dir: Path) -> None:
     def settings():
         return {
             "mode": "hosted",
-            "campaigns": [
-                {"id": key, "name": value.name}
-                for key, value in configured_campaigns(config_dir).items()
-            ],
+            "campaigns": campaign_options(config_dir),
             **store.status(),
         }
 

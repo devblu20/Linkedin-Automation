@@ -1,6 +1,6 @@
 """Explicit local-only profile collection from the dashboard."""
 
-# ruff: noqa: E501 - static dashboard markup follows the review site's embedded assets.
+
 
 import os
 import tempfile
@@ -24,7 +24,11 @@ from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.infrastructure.reporting import ExcelReportWriter
 from linkedin_automation.infrastructure.runtime import RuntimeSettings
-from linkedin_automation.interfaces.search_jobs import SearchRequest, configured_campaigns
+from linkedin_automation.interfaces.search_jobs import (
+    SearchRequest,
+    campaign_options,
+    configured_campaigns,
+)
 
 
 class ProfileCollection(BaseModel):
@@ -75,10 +79,7 @@ def install_local_collection(app: FastAPI, database_url: str | Path, config_dir:
             "mode": "local",
             "worker_online": True,
             "jobs": search_history[-10:][::-1],
-            "campaigns": [
-                {"id": key, "name": definition.name}
-                for key, definition in configured_campaigns(root).items()
-            ],
+            "campaigns": campaign_options(root),
         }
 
     @app.post("/api/search/jobs")

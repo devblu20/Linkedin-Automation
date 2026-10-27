@@ -149,7 +149,7 @@ def create_hosted_app() -> FastAPI:
             body = body.replace("Loading Neon leads", "Loading leads")
             body = body.replace(
                 "No qualified clients found in Neon.",
-                "No leads yet. Sync a completed research run to get started.",
+                "No matching leads saved yet. Choose a campaign and start a search.",
             )
             body = body.replace("Changes are saved to Neon", "Changes are saved to this dashboard")
             body = body.replace("Client updated in Neon", "Client updated")
