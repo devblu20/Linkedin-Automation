@@ -1,0 +1,148 @@
+"""Isolated, authenticated Railway review dashboard; no remote browser actions."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import os
+import secrets
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from linkedin_automation.interfaces.review_site import create_review_app
+
+_BROWSER_ACTIONS = {
+    "/api/actions/send-connections",
+    "/api/actions/check-connections",
+    "/api/actions/send-messages",
+    "/api/actions/queue",
+}
+
+
+def create_hosted_app() -> FastAPI:
+    """Fail closed without credentials and use only this service's volume database."""
+    username = os.environ.get("DASHBOARD_USERNAME", "").strip()
+    password = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not username or ":" in username or len(password) < 24:
+        raise RuntimeError(
+            "Set DASHBOARD_USERNAME and a DASHBOARD_PASSWORD of at least 24 characters"
+        )
+
+    root = Path(os.environ.get("HOSTED_DATA_DIR", "/data")).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    database = root / "research.sqlite3"
+    # Never inherit or connect to an existing application's database or browser profile.
+    os.environ["LINKEDIN_AUTOMATION_DATABASE_URL"] = f"sqlite:///{database.as_posix()}"
+    os.environ["LINKEDIN_AUTOMATION_ARTIFACT_DIR"] = str(root / "artifacts")
+    os.environ["LINKEDIN_AUTOMATION_BROWSER_DATA"] = str(root / "browser-data")
+    os.environ["LINKEDIN_AUTOMATION_SCREENSHOT_DIR"] = str(root / "screenshots")
+    app = create_review_app(database)
+
+    @app.get("/healthz", include_in_schema=False)
+    def health() -> dict[str, str]:
+        return {"status": "ok", "mode": "review-dashboard"}
+
+    @app.middleware("http")
+    async def hosted_boundary(request: Request, call_next):
+        if request.url.path == "/healthz" and request.method == "GET":
+            return await call_next(request)
+        authenticated = False
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(authorization[6:], validate=True).decode("utf-8")
+                supplied_user, separator, supplied_password = decoded.partition(":")
+                user_ok = secrets.compare_digest(supplied_user.encode(), username.encode())
+                password_ok = secrets.compare_digest(supplied_password.encode(), password.encode())
+                authenticated = bool(separator) and user_ok and password_ok
+            except (ValueError, UnicodeError, binascii.Error):
+                pass
+        if not authenticated:
+            return JSONResponse(
+                {"detail": "Sign in to LinkedIn Automation"},
+                status_code=401,
+                headers={
+                    "WWW-Authenticate": 'Basic realm="LinkedIn Automation", charset="UTF-8"',
+                    "Cache-Control": "no-store",
+                },
+            )
+        if request.url.path in _BROWSER_ACTIONS:
+            return JSONResponse(
+                {"detail": "Browser outreach is unavailable on the hosted review dashboard."},
+                status_code=409,
+            )
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if (
+                request.headers.get("sec-fetch-site") == "cross-site"
+                or (origin and urlsplit(origin).netloc != request.url.netloc)
+                or not request.headers.get("content-type", "").startswith("application/json")
+            ):
+                return JSONResponse(
+                    {"detail": "Invalid request origin or content type"}, status_code=403
+                )
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "same-origin"
+        if request.url.path == "/" and response.status_code == 200:
+            body = b"".join([chunk async for chunk in response.body_iterator]).decode("utf-8")
+            # Keep the local dashboard intact; hosted mode has no collection/send controls.
+            start = body.index('<button class="btn" onclick="checkConnections()">')
+            end = body.index('</div><div class="table-wrap">', start)
+            body = body[:start] + body[end:]
+            body = body.replace("All Neon campaigns", "Hosted review · separate database")
+            body = body.replace("Loading Neon leads", "Loading leads")
+            body = body.replace(
+                "No qualified clients found in Neon.",
+                "No leads yet. Collection runs locally; cloud sync is not configured.",
+            )
+            body = body.replace("Changes are saved to Neon", "Changes are saved to this dashboard")
+            body = body.replace("Client updated in Neon", "Client updated")
+            body = body.replace("Could not load Neon data", "Could not load dashboard data")
+            body = body.replace(
+                "<script>",
+                """<script>
+function escapeHtml(v){
+const entities={'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'};
+return String(v??'').replace(/[&<>\"']/g,c=>entities[c]);
+}
+""",
+            )
+            for old, new in {
+                "${initials(l.full_name)}": "${escapeHtml(initials(l.full_name))}",
+                "${l.full_name}": "${escapeHtml(l.full_name)}",
+                "${l.current_title||l.headline||'Title unavailable'}": (
+                    "${escapeHtml(l.current_title||l.headline||'Title unavailable')}"
+                ),
+                "${l.company||'Unknown company'}": "${escapeHtml(l.company||'Unknown company')}",
+                "${l.location||'Location unavailable'}": (
+                    "${escapeHtml(l.location||'Location unavailable')}"
+                ),
+            }.items():
+                body = body.replace(old, new)
+            response = HTMLResponse(
+                body,
+                headers={
+                    key: value
+                    for key, value in response.headers.items()
+                    if key.lower() not in {"content-length", "content-type"}
+                },
+            )
+        return response
+
+    return app
+
+
+def main() -> None:
+    import uvicorn
+
+    uvicorn.run(create_hosted_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+
+
+if __name__ == "__main__":
+    main()
