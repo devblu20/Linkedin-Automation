@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -29,6 +30,7 @@ from linkedin_automation.domain.enums import OutreachStatus, RunStatus
 from linkedin_automation.domain.models import (
     ConnectionRequest,
     Lead,
+    LeadCandidate,
     MatchEvidence,
     Observation,
     OutreachRecord,
@@ -378,7 +380,11 @@ class DatabaseResearchRepository:
             return inserted
 
     def import_review_run(
-        self, run: ResearchRun, rows: list[tuple[Lead, OutreachRecord]]
+        self,
+        run: ResearchRun,
+        rows: list[tuple[Lead, OutreachRecord]],
+        *,
+        observations: list[Observation] | None = None,
     ) -> tuple[int, int]:
         """Atomically add profiles; repeated imports never overwrite cloud review work."""
         inserted = skipped = 0
@@ -390,30 +396,148 @@ class DatabaseResearchRepository:
                 current = self._new_run_row(run)
                 session.add(current)
                 session.flush()
+            for observation in observations or []:
+                exists = session.scalar(
+                    select(ObservationRow).where(
+                        ObservationRow.run_id == str(run.id),
+                        ObservationRow.canonical_url == observation.canonical_url,
+                    )
+                )
+                if exists is not None:
+                    expected = asdict(observation.candidate)
+                    expected["collected_at"] = observation.candidate.collected_at.isoformat()
+                    if (
+                        json.loads(exists.candidate_json) != json.loads(json.dumps(expected))
+                        or exists.accepted != observation.accepted
+                    ):
+                        raise ValueError("A collected profile already exists with different data")
+                    continue
+                payload = asdict(observation.candidate)
+                payload["collected_at"] = observation.candidate.collected_at.isoformat()
+                session.add(
+                    ObservationRow(
+                        id=str(observation.id),
+                        run_id=str(run.id),
+                        candidate_json=json.dumps(payload, sort_keys=True),
+                        accepted=observation.accepted,
+                        canonical_url=observation.canonical_url,
+                        rejection_reason=observation.rejection_reason,
+                        collected_at=observation.candidate.collected_at,
+                    )
+                )
             for lead, record in rows:
-                existing = session.scalar(select(LeadRow).where(
-                    LeadRow.run_id == str(run.id), LeadRow.profile_url == lead.profile_url
-                ))
+                existing = session.scalar(
+                    select(LeadRow).where(
+                        LeadRow.run_id == str(run.id), LeadRow.profile_url == lead.profile_url
+                    )
+                )
                 if existing is not None:
                     skipped += 1
                     continue
                 session.add(self._new_lead_row(lead))
                 session.flush()
-                session.add(OutreachRow(
-                    lead_id=str(lead.id), run_id=str(run.id), firm_type=record.firm_type,
-                    funds_gbp=None, fund_evidence_url="", fund_evidence_notes="",
-                    score=record.score, status=record.status.value,
-                    connection_message=record.connection_message,
-                    follow_up_message=record.follow_up_message, updated_at=record.updated_at,
-                ))
+                session.add(
+                    OutreachRow(
+                        lead_id=str(lead.id),
+                        run_id=str(run.id),
+                        firm_type=record.firm_type,
+                        funds_gbp=None,
+                        fund_evidence_url="",
+                        fund_evidence_notes="",
+                        score=record.score,
+                        status=record.status.value,
+                        connection_message=record.connection_message,
+                        follow_up_message=record.follow_up_message,
+                        updated_at=record.updated_at,
+                    )
+                )
                 inserted += 1
             session.flush()
-            total = session.scalar(select(func.count()).select_from(LeadRow).where(
-                LeadRow.run_id == str(run.id)
-            )) or 0
-            current.observed = current.accepted = int(total)
+            total = (
+                session.scalar(
+                    select(func.count()).select_from(LeadRow).where(LeadRow.run_id == str(run.id))
+                )
+                or 0
+            )
+            observed = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ObservationRow)
+                    .where(ObservationRow.run_id == str(run.id))
+                )
+                or 0
+            )
+            rejected = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ObservationRow)
+                    .where(ObservationRow.run_id == str(run.id), ObservationRow.accepted.is_(False))
+                )
+                or 0
+            )
+            current.observed = int(observed or total)
+            current.accepted = int(total)
+            current.rejected = int(rejected)
             current.updated_at = run.updated_at
         return inserted, skipped
+
+    def list_observations(
+        self,
+        run_id: UUID | None = None,
+        *,
+        accepted: bool | None = None,
+        limit: int = 250,
+        offset: int = 0,
+    ) -> list[Observation]:
+        with Session(self._engine) as session:
+            statement = select(ObservationRow)
+            if run_id is not None:
+                statement = statement.where(ObservationRow.run_id == str(run_id))
+            if accepted is not None:
+                statement = statement.where(ObservationRow.accepted.is_(accepted))
+            rows = session.scalars(
+                statement.order_by(ObservationRow.collected_at.desc(), ObservationRow.id)
+                .limit(limit)
+                .offset(offset)
+            ).all()
+            result = []
+            for row in rows:
+                payload = json.loads(row.candidate_json)
+                payload["collected_at"] = _aware(datetime.fromisoformat(payload["collected_at"]))
+                for key in ("experience", "education", "skills"):
+                    payload[key] = tuple(payload.get(key, ()))
+                result.append(
+                    Observation(
+                        UUID(row.id),
+                        UUID(row.run_id),
+                        LeadCandidate(**payload),
+                        row.accepted,
+                        row.canonical_url,
+                        row.rejection_reason,
+                    )
+                )
+            return result
+
+    def observation_counts(self, run_id: UUID | None = None) -> dict[str, int]:
+        with Session(self._engine) as session:
+            statement = select(ObservationRow.accepted, func.count()).group_by(
+                ObservationRow.accepted
+            )
+            if run_id is not None:
+                statement = statement.where(ObservationRow.run_id == str(run_id))
+            counts = dict(session.execute(statement).all())
+            return {
+                "read": counts.get(True, 0) + counts.get(False, 0),
+                "accepted": counts.get(True, 0),
+                "rejected": counts.get(False, 0),
+            }
+
+    def list_runs(self, limit: int = 50) -> list[ResearchRun]:
+        with Session(self._engine) as session:
+            rows = session.scalars(
+                select(RunRow).order_by(RunRow.created_at.desc()).limit(limit)
+            ).all()
+            return [_run_from_row(row) for row in rows]
 
     def list_leads(self, run_id: UUID | None = None) -> list[Lead]:
         with Session(self._engine) as session:
@@ -471,11 +595,17 @@ class DatabaseResearchRepository:
 
     def add_connection_request(self, request: ConnectionRequest) -> None:
         with Session(self._engine) as session:
-            session.add(ConnectionRequestRow(
-                id=str(request.id), lead_id=str(request.lead_id), run_id=str(request.run_id),
-                status=request.status, requested_at=request.requested_at,
-                updated_at=request.updated_at, error_message=request.error_message,
-            ))
+            session.add(
+                ConnectionRequestRow(
+                    id=str(request.id),
+                    lead_id=str(request.lead_id),
+                    run_id=str(request.run_id),
+                    status=request.status,
+                    requested_at=request.requested_at,
+                    updated_at=request.updated_at,
+                    error_message=request.error_message,
+                )
+            )
             session.commit()
 
     def list_connection_requests(self, run_id: UUID | None = None) -> list[ConnectionRequest]:
@@ -483,11 +613,21 @@ class DatabaseResearchRepository:
             statement = select(ConnectionRequestRow)
             if run_id is not None:
                 statement = statement.where(ConnectionRequestRow.run_id == str(run_id))
-            rows = session.scalars(statement.order_by(
-                ConnectionRequestRow.requested_at.desc()
-            )).all()
-            return [ConnectionRequest(UUID(r.id), UUID(r.lead_id), UUID(r.run_id), r.status,
-                _aware(r.requested_at), _aware(r.updated_at), r.error_message) for r in rows]
+            rows = session.scalars(
+                statement.order_by(ConnectionRequestRow.requested_at.desc())
+            ).all()
+            return [
+                ConnectionRequest(
+                    UUID(r.id),
+                    UUID(r.lead_id),
+                    UUID(r.run_id),
+                    r.status,
+                    _aware(r.requested_at),
+                    _aware(r.updated_at),
+                    r.error_message,
+                )
+                for r in rows
+            ]
 
     def mark_connection_accepted(self, lead_id: UUID, accepted_at: datetime) -> None:
         """Mark the newest successful request for a lead as accepted."""
@@ -508,18 +648,31 @@ class DatabaseResearchRepository:
 
     def count_connection_requests_since(self, since: datetime) -> int:
         with Session(self._engine) as session:
-            return int(session.scalar(select(func.count()).select_from(ConnectionRequestRow).where(
-                ConnectionRequestRow.requested_at >= since,
-                ConnectionRequestRow.status == "sent",
-            )) or 0)
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ConnectionRequestRow)
+                    .where(
+                        ConnectionRequestRow.requested_at >= since,
+                        ConnectionRequestRow.status == "sent",
+                    )
+                )
+                or 0
+            )
 
     def add_sent_message(self, message: SentMessage) -> None:
         with Session(self._engine) as session:
-            session.add(SentMessageRow(
-                id=str(message.id), lead_id=str(message.lead_id), run_id=str(message.run_id),
-                content=message.content, status=message.status, sent_at=message.sent_at,
-                error_message=message.error_message,
-            ))
+            session.add(
+                SentMessageRow(
+                    id=str(message.id),
+                    lead_id=str(message.lead_id),
+                    run_id=str(message.run_id),
+                    content=message.content,
+                    status=message.status,
+                    sent_at=message.sent_at,
+                    error_message=message.error_message,
+                )
+            )
             session.commit()
 
     def list_sent_messages(self, run_id: UUID | None = None) -> list[SentMessage]:
@@ -528,14 +681,29 @@ class DatabaseResearchRepository:
             if run_id is not None:
                 statement = statement.where(SentMessageRow.run_id == str(run_id))
             rows = session.scalars(statement.order_by(SentMessageRow.sent_at.desc())).all()
-            return [SentMessage(UUID(r.id), UUID(r.lead_id), UUID(r.run_id), r.content,
-                r.status, _aware(r.sent_at), r.error_message) for r in rows]
+            return [
+                SentMessage(
+                    UUID(r.id),
+                    UUID(r.lead_id),
+                    UUID(r.run_id),
+                    r.content,
+                    r.status,
+                    _aware(r.sent_at),
+                    r.error_message,
+                )
+                for r in rows
+            ]
 
     def count_sent_messages_since(self, since: datetime) -> int:
         with Session(self._engine) as session:
-            return int(session.scalar(select(func.count()).select_from(SentMessageRow).where(
-                SentMessageRow.sent_at >= since, SentMessageRow.status == "sent"
-            )) or 0)
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(SentMessageRow)
+                    .where(SentMessageRow.sent_at >= since, SentMessageRow.status == "sent")
+                )
+                or 0
+            )
 
     @staticmethod
     def _new_run_row(run: ResearchRun) -> RunRow:

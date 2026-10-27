@@ -75,7 +75,7 @@ def test_expired_jobs_fail_without_reexecution(tmp_path):
     assert jobs.status()["jobs"][0]["status"] == "failed"
 
 
-@pytest.mark.parametrize("outcome", ["matched", "empty", "restricted"])
+@pytest.mark.parametrize("outcome", ["matched", "rejected", "empty", "restricted"])
 def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome):
     monkeypatch.setenv("DASHBOARD_USERNAME", "reviewer")
     monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password-at-least-24-characters")
@@ -101,8 +101,8 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
             candidate = LeadCandidate(
                 profile_url="https://www.linkedin.com/in/example/",
                 full_name="Example Founder",
-                headline="Founder of a family office",
-                location="London",
+                headline="Student" if outcome == "rejected" else "Founder of a family office",
+                location="Nigeria" if outcome == "rejected" else "London",
             )
             return CollectionBatch(
                 (candidate,),
@@ -128,8 +128,11 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
             assert response.status_code == 200, response.text
             return response.json()
 
-        def sync(payload, *args):
-            response = http.post("/api/import/runs", json=payload.model_dump(mode="json"))
+        def sync(payload, *args, **kwargs):
+            endpoint = (
+                "/api/import/research" if kwargs.get("include_observations") else "/api/import/runs"
+            )
+            response = http.post(endpoint, json=payload.model_dump(mode="json"))
             assert response.status_code == 200, response.text
             return response.json()
 
@@ -141,6 +144,10 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
         assert state["jobs"][0]["result"]["accepted"] == int(outcome == "matched")
         assert state["jobs"][0]["requested"] == {"profiles": 1, "pages": 1}
         leads = http.get("/api/leads").json()
+        observations = http.get("/api/observations").json()["items"]
+        assert len(observations) == int(outcome in {"matched", "rejected"})
+        if outcome == "rejected":
+            assert observations[0]["decision"] == "rejected"
         if outcome == "matched":
             assert state["jobs"][0]["result"]["pages_visited"] == 1
             assert state["jobs"][0]["result"]["hidden_result_cards"] == 9

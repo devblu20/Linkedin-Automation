@@ -300,6 +300,9 @@ def sync_run(
     url: Annotated[str, typer.Option(help="Destination dashboard HTTPS origin.")],
     credentials_file: Annotated[Path, typer.Option(help="Local dashboard credentials file.")],
     dry_run: Annotated[bool, typer.Option(help="Validate remotely without saving leads.")] = False,
+    include_rejected: Annotated[
+        bool, typer.Option(help="Sync all read profiles, including rejections.")
+    ] = False,
 ) -> None:
     """Upload accepted profiles; cloud approvals/drafts are never overwritten."""
     from dotenv import dotenv_values
@@ -313,7 +316,14 @@ def sync_run(
             run = repository.get_run(run_id)
             if run is None:
                 raise ValueError("Local run not found")
-            payload = export_transfer(run, repository.list_leads(run_id))
+            if include_rejected:
+                from linkedin_automation.application.research_transfer import (
+                    export_research_transfer,
+                )
+
+                payload = export_research_transfer(run, repository.list_observations(run_id))
+            else:
+                payload = export_transfer(run, repository.list_leads(run_id))
         credentials = dotenv_values(credentials_file)
         result = sync_transfer(
             payload,
@@ -321,6 +331,7 @@ def sync_run(
             credentials.get("DASHBOARD_USERNAME") or "",
             credentials.get("DASHBOARD_PASSWORD") or "",
             dry_run=dry_run,
+            include_observations=include_rejected,
         )
     except (ValueError, OSError) as error:
         _fail(error)

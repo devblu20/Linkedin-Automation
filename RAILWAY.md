@@ -47,6 +47,23 @@ The worker never sends outreach. Computer off or worker stopped means no collect
 
 ## Local collection to hosted review
 
+The dashboard has a read-only Collected profiles view with run/decision filters,
+pagination, rejection reasons and missing-field details. Saved leads for review
+contains accepted campaign matches separately. Rejected collected profiles never
+become approved leads merely because they were synced.
+
+The worker automatically syncs visible observations (accepted and rejected) through
+`POST /api/import/research`. Acceptance is recomputed on the server. The existing
+observations table is reused; no migration is needed. Imports are atomic and
+idempotent per run/profile, preserve review edits and reject conflicting retries.
+Raw browser snapshots, passwords, local file paths and approval state are excluded.
+To backfill an existing completed local version 2 run:
+
+```powershell
+python -m linkedin_automation sync <run-id> --url https://<dashboard-domain> --credentials-file .env.railway.local --include-rejected --dry-run
+python -m linkedin_automation sync <run-id> --url https://<dashboard-domain> --credentials-file .env.railway.local --include-rejected
+```
+
 For manual sign-in, use a separate local Chrome profile and keep the same profile
 for subsequent collection:
 

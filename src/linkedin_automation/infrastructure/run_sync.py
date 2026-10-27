@@ -15,7 +15,13 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def sync_transfer(
-    payload: RunTransfer, url: str, username: str, password: str, *, dry_run: bool = False
+    payload: RunTransfer,
+    url: str,
+    username: str,
+    password: str,
+    *,
+    dry_run: bool = False,
+    include_observations: bool = False,
 ) -> dict:
     parsed = urlsplit(url)
     local = parsed.hostname in {"localhost", "127.0.0.1"}
@@ -34,7 +40,8 @@ def sync_transfer(
     if len(body) > MAX_TRANSFER_BYTES:
         raise ValueError("Run exceeds the 2 MiB transfer limit")
     authorization = base64.b64encode(f"{username}:{password}".encode()).decode()
-    target = url.rstrip("/") + "/api/import/runs" + ("?dry_run=true" if dry_run else "")
+    endpoint = "/api/import/research" if include_observations else "/api/import/runs"
+    target = url.rstrip("/") + endpoint + ("?dry_run=true" if dry_run else "")
     request = Request(
         target,
         data=body,

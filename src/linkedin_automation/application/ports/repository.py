@@ -29,6 +29,15 @@ class ResearchRepository(Protocol):
 
     def add_observation(self, observation: Observation) -> None: ...
 
+    def list_observations(
+        self,
+        run_id: UUID | None = None,
+        *,
+        accepted: bool | None = None,
+        limit: int = 250,
+        offset: int = 0,
+    ) -> list[Observation]: ...
+
     def upsert_lead(self, lead: Lead) -> bool: ...
 
     def list_leads(self, run_id: UUID | None = None) -> list[Lead]: ...

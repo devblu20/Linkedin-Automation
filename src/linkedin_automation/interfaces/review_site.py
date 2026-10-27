@@ -85,6 +85,9 @@ def create_review_app(
         title="Lead Qualification Review", docs_url=None, redoc_url=None, lifespan=lifespan
     )
     local_collection = enable_collection and run_id is None
+    from linkedin_automation.interfaces.observation_view import install_observation_routes
+
+    install_observation_routes(app, repository, run_id)
     if local_collection:
         from linkedin_automation.interfaces.local_collection import install_local_collection
 
@@ -94,6 +97,17 @@ def create_review_app(
     def dashboard() -> str:
         scope = f"Run {run_id}" if run_id is not None else "All Neon campaigns"
         html = _DASHBOARD_HTML.replace("__SCOPE__", scope)
+        from linkedin_automation.interfaces.observation_view import (
+            OBSERVATION_PANEL,
+            OBSERVATION_SCRIPT,
+        )
+
+        html = html.replace(
+            '<section class="panel"><div class="toolbar">',
+            OBSERVATION_PANEL + '<section class="panel"><h2 style="padding:16px 19px 0;margin:0;font-size:17px">Saved leads for review</h2><div class="toolbar">',
+            1,
+        )
+        html = html.replace("</body>", OBSERVATION_SCRIPT + "</body>")
         for expression in (
             "initials(l.full_name)",
             "l.full_name",

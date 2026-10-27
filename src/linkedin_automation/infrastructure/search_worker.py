@@ -19,7 +19,7 @@ from linkedin_automation.application.exceptions import (
     LimitedVisibilityError,
     SecurityChallengeError,
 )
-from linkedin_automation.application.run_transfer import export_transfer
+from linkedin_automation.application.research_transfer import export_research_transfer
 from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.domain.search_definition import SearchDefinition
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
@@ -114,9 +114,12 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
             reporter=ExcelReportWriter(settings.artifact_dir),
         )
         result = workflow.start(definition_file, dry_run=False, upload=False)
-        if result.lead_count:
-            transfer = export_transfer(result.run, repository.list_leads(result.run.id))
-            sync_transfer(transfer, client.url, client.username, client.password)
+        observations = repository.list_observations(result.run.id)
+        if observations:
+            transfer = export_research_transfer(result.run, observations)
+            sync_transfer(
+                transfer, client.url, client.username, client.password, include_observations=True
+            )
         return {
             "status": "completed",
             "run_id": str(result.run.id),
