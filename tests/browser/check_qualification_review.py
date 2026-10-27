@@ -1,5 +1,6 @@
 """Opt-in Chrome test with temporary, local-only qualification evidence."""
 
+import csv
 import runpy
 import socket
 import tempfile
@@ -8,6 +9,7 @@ import time
 from pathlib import Path
 
 import uvicorn
+from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
 
 from linkedin_automation.interfaces.review_site import create_review_app
@@ -75,10 +77,27 @@ def main():
                 final = page.request.get(f"http://127.0.0.1:{port}/api/leads").json()[0]
                 assert final["lead"]["id"] == str(lead.id)
                 assert final["outreach"]["status"] == "rejected"
+                with page.expect_download() as download:
+                    page.locator("#export-leads-csv").click()
+                csv_path = Path(directory) / "leads.csv"
+                download.value.save_as(csv_path)
+                with csv_path.open(encoding="utf-8-sig", newline="") as report:
+                    exported = list(csv.DictReader(report))
+                assert len(exported) == 1
+                assert exported[0]["Review status"] == "rejected"
+                page.locator("#statusFilter").select_option("approved")
+                with page.expect_download() as download:
+                    page.locator("#export-leads-xlsx").click()
+                excel_path = Path(directory) / "leads.xlsx"
+                download.value.save_as(excel_path)
+                workbook = load_workbook(excel_path)
+                assert workbook.worksheets[0].max_row == 1
+                assert "Export scope" in workbook.sheetnames
+                workbook.close()
                 browser.close()
             print(
                 "PASS: preview is read-only; blocked approval, evidence-backed save, "
-                "reopen and rejection work"
+                "reopen, rejection and filtered CSV/Excel downloads work"
             )
         finally:
             server.should_exit = True

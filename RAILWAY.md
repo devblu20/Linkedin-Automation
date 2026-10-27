@@ -171,6 +171,24 @@ API. Keep backups on its own volume and never operate on another service's data.
 
 ## Verification
 
+### Dashboard downloads
+
+**Download CSV** and **Download Excel** export collected profiles using the run
+and collection-decision filters, or saved leads using search text and review
+status. Downloads include all matching rows across pages, up to 5,000. Narrow
+the filters if the limit is exceeded; the server refuses to silently truncate.
+Empty selections produce a header-only report. Excel also includes an Export
+scope sheet with the filters and row count.
+
+Authenticated GET `/api/exports/observations.csv` and `.xlsx` accept `run_id` and
+`decision`. `/api/exports/leads.csv` and `.xlsx` accept `run_id`, `status` and `q`.
+Run-scoped review pages cannot export other runs. Files are generated in memory
+from current records, without following stored report paths or creating public
+download links. Raw browser snapshots, local paths and credentials are excluded.
+CSV uses UTF-8 with a BOM; spreadsheet formula prefixes and invalid XML control
+characters are escaped/removed. Fields exceeding Excel's cell limit require CSV.
+Exports do not change qualification, review decisions or outreach state.
+
 ### Qualification review
 
 **Review** opens the original run's qualification rules, score breakdown,

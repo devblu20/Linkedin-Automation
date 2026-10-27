@@ -90,6 +90,9 @@ def create_review_app(
     from linkedin_automation.interfaces.observation_view import install_observation_routes
 
     install_observation_routes(app, repository, run_id)
+    from linkedin_automation.interfaces.report_exports import install_report_exports
+
+    install_report_exports(app, repository, run_id)
     if local_collection:
         from linkedin_automation.interfaces.local_collection import install_local_collection
 
@@ -111,6 +114,20 @@ def create_review_app(
             1,
         )
         html = html.replace("</body>", OBSERVATION_SCRIPT + "</body>")
+        from linkedin_automation.interfaces.report_exports import EXPORT_SCRIPT, export_buttons
+
+        html = html.replace(
+            '<button class="btn" onclick="checkConnections()">',
+            export_buttons("leads") + '<button class="btn" onclick="checkConnections()">',
+            1,
+        )
+        html = html.replace(
+            '<button class="btn" id="refreshObservations"',
+            export_buttons("observations") + '<button class="btn" id="refreshObservations"',
+            1,
+        )
+        html = html.replace("</body>", EXPORT_SCRIPT + "</body>")
+        html = html.replace("</style>", ".toolbar{flex-wrap:wrap}</style>", 1)
         from linkedin_automation.interfaces.qualification_review import QUALIFICATION_SCRIPT
 
         html = html.replace("</body>", QUALIFICATION_SCRIPT + "</body>")
