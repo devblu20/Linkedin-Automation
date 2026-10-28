@@ -44,7 +44,8 @@ def main():
                 if time.monotonic() > deadline:
                     raise RuntimeError("Temporary server not ready")
                 time.sleep(0.05)
-            origin = "http://127.0.0.1:" + str(port)
+            prefix = os.getenv("DASHBOARD_TEST_PREFIX", "")
+            origin = "http://127.0.0.1:" + str(port) + prefix
             with sync_playwright() as p:
                 browser = p.chromium.launch(channel="chrome", headless=True)
                 context = browser.new_context(
@@ -56,7 +57,14 @@ def main():
                 )
                 page = context.new_page()
                 errors = []
+                api_requests = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
+                page.on(
+                    "request",
+                    lambda request: (
+                        api_requests.append(request.url) if "/api/" in request.url else None
+                    ),
+                )
                 page.goto(origin + "/#outreach")
                 expect(page.locator("#automationMode")).to_contain_text("automatically")
                 page.get_by_role("button", name="Prepare approved leads", exact=True).click()
@@ -110,6 +118,9 @@ def main():
                 page.get_by_role("button", name="Refresh delivery", exact=True).click()
                 expect(page.locator("#workspaceOutreachRows")).to_contain_text("message sent")
                 assert not errors, errors
+                assert api_requests and all(
+                    url.startswith(origin + "/api/") for url in api_requests
+                ), api_requests
                 browser.close()
                 print(
                     "PASS: auto qualification, queue preview/authorization "

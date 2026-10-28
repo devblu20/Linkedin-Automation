@@ -190,6 +190,21 @@ authorized browser delivery worker described below. Legacy direct-send routes re
 
 ### Hosted automatic qualification and authorized delivery
 
+For the public URL `https://www.bluqq.com/linkedin-automation`, add only the following
+rewrites to the existing BluQQ Vercel project's `vercel.json`, preserving all other rules:
+
+```json
+{"source":"/linkedin-automation","destination":"https://linkedin-automation-production-7964.up.railway.app/linkedin-automation"}
+{"source":"/linkedin-automation/:path*","destination":"https://linkedin-automation-production-7964.up.railway.app/linkedin-automation/:path*"}
+```
+
+These are two entries inside the existing `rewrites` array. Deploy the updated backend first,
+set `DASHBOARD_PUBLIC_ORIGIN=https://www.bluqq.com` on its Railway service, then publish the
+Vercel routing update. The backend supports both its direct URL and this public path; API calls
+and downloads remain below `/linkedin-automation/api/`, leaving other BluQQ APIs untouched.
+The bare domain currently redirects to `www.bluqq.com`. Basic authentication remains required.
+Do not change DNS or point the entire BluQQ domain at Railway.
+
 Set `AUTOMATIC_QUALIFICATION=1` and `AUTOMATIC_QUEUE=1` on the hosted service to evaluate
 newly collected profiles against their saved campaign rules and prepare eligible outreach.
 Current role, company and location must be available, and the current target identity and

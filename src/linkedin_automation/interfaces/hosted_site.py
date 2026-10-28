@@ -42,6 +42,19 @@ def create_hosted_app() -> FastAPI:
         )
 
     root = Path(os.environ.get("HOSTED_DATA_DIR", "/data")).resolve()
+    public_origin = os.getenv("DASHBOARD_PUBLIC_ORIGIN", "").rstrip("/")
+    if public_origin:
+        parsed = urlsplit(public_origin)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise RuntimeError("DASHBOARD_PUBLIC_ORIGIN must be an HTTPS origin without a path")
     root.mkdir(parents=True, exist_ok=True)
     database = root / "research.sqlite3"
     # Never inherit or connect to an existing application's database or browser profile.
@@ -150,9 +163,15 @@ def create_hosted_app() -> FastAPI:
             )
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
+            public_request = bool(request.scope.get("state", {}).get("dashboard_prefix"))
+            trusted_public_origin = public_request and public_origin and origin == public_origin
             if (
                 request.headers.get("sec-fetch-site") == "cross-site"
-                or (origin and urlsplit(origin).netloc != request.url.netloc)
+                or (
+                    origin
+                    and urlsplit(origin).netloc != request.url.netloc
+                    and not trusted_public_origin
+                )
                 or not request.headers.get("content-type", "").startswith("application/json")
             ):
                 return JSONResponse(
@@ -219,6 +238,11 @@ return String(v??'').replace(/[&<>\"']/g,c=>entities[c]);
                 ),
             }.items():
                 body = body.replace(old, new)
+            prefix = request.scope.get("state", {}).get("dashboard_prefix", "")
+            if prefix:
+                # All hosted API links, fetches and downloads share this path. Do not
+                # claim the main site's /api routes or rewrite external profile URLs.
+                body = body.replace("/api/", prefix + "/api/")
             response = HTMLResponse(
                 body,
                 headers={
@@ -229,6 +253,9 @@ return String(v??'').replace(/[&<>\"']/g,c=>entities[c]);
             )
         return response
 
+    from linkedin_automation.interfaces.public_path import PublicPathMiddleware
+
+    app.add_middleware(PublicPathMiddleware)
     return app
 
 
