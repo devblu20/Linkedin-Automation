@@ -210,6 +210,22 @@ client objects.
 
 ## Data retention and security
 
+### Browser worker recovery
+
+The worker saves finished research and its dashboard completion in an atomic local handoff
+under `artifacts/worker-pending/` before attempting network upload. After a connection failure
+or worker restart it retries this handoff before claiming another search. Uploads are keyed by
+research run ID; repeated identical completions are acknowledged without changing the saved
+result. No browser search is repeated automatically. Keep this private directory with the
+local research database: it includes a claim token and collected profile data, but no dashboard
+password. Do not delete it while a result is awaiting upload.
+
+If a claim has expired after 30 minutes, the worker can still sync its finished research;
+the dashboard search remains expired and is not revived. A process killed *during* browser
+collection cannot recover an unfinished result automatically. Inspect the local run before
+starting another search. Login and security checks require manual action, and a closed browser
+is reported as an interrupted search. Hidden profiles remain inaccessible.
+
 - Never commit `.env` files, OAuth credentials, tokens, cookies, browser profiles, databases,
   reports, screenshots, or collected personal data.
 - Collect only fields visible to and authorized for the signed-in user.

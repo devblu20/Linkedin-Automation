@@ -20,6 +20,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from linkedin_automation.application.exceptions import (
     AuthenticationRequiredError,
+    BrowserClosedError,
     CollectionError,
     LayoutChangedError,
     LimitedVisibilityError,
@@ -573,7 +574,7 @@ class PlaywrightLinkedInCollector:
                                     continue
                                 self._capture(page, step_number)
                                 if "closed" in str(error).casefold():
-                                    raise CollectionError(
+                                    raise BrowserClosedError(
                                         "LinkedIn browser window was closed before collection "
                                         "finished"
                                     ) from error
@@ -723,7 +724,16 @@ class PlaywrightLinkedInCollector:
                                     )
                                     continue
                                 accepted_candidates.append(extract_visible_profile(page, candidate))
-                            except (PlaywrightError, LeadProcessingError, LimitedVisibilityError):
+                            except PlaywrightError as error:
+                                if page.is_closed() or "closed" in str(error).casefold():
+                                    raise BrowserClosedError(
+                                        "LinkedIn browser was closed during a profile visit"
+                                    ) from error
+                                logger.warning(
+                                    "linkedin_profile_unreadable_skipped",
+                                    extra={"profile_url": candidate.profile_url},
+                                )
+                            except (LeadProcessingError, LimitedVisibilityError):
                                 logger.warning(
                                     "linkedin_profile_unreadable_skipped",
                                     extra={"profile_url": candidate.profile_url},
@@ -740,10 +750,17 @@ class PlaywrightLinkedInCollector:
                     error.hidden_result_cards = hidden_result_cards
                     raise
                 except PlaywrightError as error:
-                    failure = CollectionError(
+                    failure_type = (
+                        BrowserClosedError
+                        if page.is_closed() or "closed" in str(error).casefold()
+                        else CollectionError
+                    )
+                    failure = failure_type(
                         "LinkedIn browser navigation interrupted; resume the run"
                     )
                     failure.checkpoint_page = last_page
+                    failure.pages_visited = pages_visited
+                    failure.hidden_result_cards = hidden_result_cards
                     raise failure from error
             finally:
                 context.close()

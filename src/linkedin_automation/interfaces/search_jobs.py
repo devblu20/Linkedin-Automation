@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import time
 from contextlib import closing, contextmanager
+from hashlib import sha256
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -87,6 +88,8 @@ class SearchJobs:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(search_jobs)")}
             if "policy" not in columns:
                 db.execute("ALTER TABLE search_jobs ADD COLUMN policy TEXT")
+            if "completion_hash" not in columns:
+                db.execute("ALTER TABLE search_jobs ADD COLUMN completion_hash TEXT")
 
     @contextmanager
     def connection(self):
@@ -191,6 +194,16 @@ class SearchJobs:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM search_jobs WHERE id=?", (str(identifier),)).fetchone()
+            values = result.model_dump(mode="json", exclude={"token"})
+            fingerprint = sha256(result.model_dump_json().encode()).hexdigest()
+            if (
+                row is not None
+                and row["status"] in {"completed", "failed"}
+                and secrets.compare_digest(row["completion_hash"] or "", fingerprint)
+            ):
+                # A response can be lost after commit. Only an identical authenticated
+                # completion may be acknowledged again; historical reviews stay intact.
+                return
             if (
                 row is None
                 or row["status"] != "running"
@@ -208,10 +221,10 @@ class SearchJobs:
                 )
             ):
                 raise ValueError("Search counters exceed the requested limits")
-            values = result.model_dump(mode="json", exclude={"token"})
             db.execute(
-                "UPDATE search_jobs SET status=?,finished=?,result=?,token=NULL WHERE id=?",
-                (result.status, time.time(), json.dumps(values), str(identifier)),
+                "UPDATE search_jobs SET status=?,finished=?,result=?,token=NULL,"
+                "completion_hash=? WHERE id=?",
+                (result.status, time.time(), json.dumps(values), fingerprint, str(identifier)),
             )
 
     def status(self) -> dict:

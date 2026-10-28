@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from linkedin_automation.application.exceptions import LimitedVisibilityError
+from linkedin_automation.application.exceptions import BrowserClosedError, LimitedVisibilityError
 from linkedin_automation.infrastructure.browser.linkedin import PlaywrightLinkedInCollector
 from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 
@@ -96,6 +96,8 @@ def collect(monkeypatch, tmp_path, pages, limit=5, redirect=None, unreadable=Fal
     )
 
     def extract(p, candidate):
+        if unreadable == "closed":
+            raise PlaywrightTimeoutError("Target page, context or browser has been closed")
         if unreadable:
             raise PlaywrightTimeoutError("Profile unavailable")
         return candidate
@@ -186,3 +188,10 @@ def test_failed_profile_visits_also_respect_limit(monkeypatch, tmp_path):
     assert len(page.profile_visits) == 1
     assert len(page.queries) == 1
     assert batch.complete
+
+
+def test_closed_browser_stops_instead_of_reporting_empty_success(monkeypatch, tmp_path):
+    with pytest.raises(BrowserClosedError) as stopped:
+        collect(monkeypatch, tmp_path, [([anchor("A")], 9)], unreadable="closed")
+    assert stopped.value.pages_visited == 1
+    assert stopped.value.hidden_result_cards == 9

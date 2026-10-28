@@ -38,6 +38,10 @@ class AuthenticationRequiredError(CollectionError):
     """The user must authenticate in the supervised browser."""
 
 
+class BrowserClosedError(CollectionError):
+    """The supervised browser was closed while collection was active."""
+
+
 class SecurityChallengeError(CollectionError):
     """A checkpoint or CAPTCHA requires user action."""
 

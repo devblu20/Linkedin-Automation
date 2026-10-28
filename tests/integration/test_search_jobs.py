@@ -75,8 +75,32 @@ def test_expired_jobs_fail_without_reexecution(tmp_path):
     assert jobs.status()["jobs"][0]["status"] == "failed"
 
 
+def test_completion_retry_requires_identical_result_and_original_token(tmp_path):
+    jobs = SearchJobs(tmp_path / "jobs.sqlite3")
+    jobs.enqueue(search_payload(), configured_campaigns(Path("config")))
+    job = jobs.claim()
+    result = SearchCompletion(token=job["token"], status="completed", message="Finished")
+    jobs.complete(UUID(job["id"]), result)
+    before = jobs.status()
+    SearchJobs(jobs.path).complete(UUID(job["id"]), result)
+    assert jobs.status() == before
+    for changed in [
+        result.model_copy(update={"message": "Changed"}),
+        result.model_copy(update={"token": "0" * 48}),
+    ]:
+        with pytest.raises(ValueError):
+            jobs.complete(UUID(job["id"]), changed)
+    with jobs.connection() as db:
+        row = db.execute("SELECT token,completion_hash FROM search_jobs").fetchone()
+        assert row["token"] is None
+        assert job["token"] not in row["completion_hash"]
+
+
 @pytest.mark.parametrize("outcome", ["matched", "rejected", "empty", "restricted"])
-def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome):
+@pytest.mark.parametrize("lost_upload_response", [False, True])
+def test_worker_claim_search_save_sync_and_status(
+    tmp_path, monkeypatch, outcome, lost_upload_response
+):
     monkeypatch.setenv("DASHBOARD_USERNAME", "reviewer")
     monkeypatch.setenv("DASHBOARD_PASSWORD", "test-password-at-least-24-characters")
     monkeypatch.setenv("HOSTED_DATA_DIR", str(tmp_path / "cloud"))
@@ -86,11 +110,14 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
     )
     monkeypatch.setenv("LINKEDIN_AUTOMATION_ARTIFACT_DIR", str(tmp_path / "reports"))
 
+    collections, uploads = [], []
+
     class Collector:
         def __init__(self, **kwargs):
             pass
 
         def collect(self, definition, **kwargs):
+            collections.append(True)
             assert definition.limits.max_results == 1
             if outcome == "restricted":
                 raise LimitedVisibilityError(
@@ -134,11 +161,18 @@ def test_worker_claim_search_save_sync_and_status(tmp_path, monkeypatch, outcome
             )
             response = http.post(endpoint, json=payload.model_dump(mode="json"))
             assert response.status_code == 200, response.text
+            uploads.append(True)
+            if lost_upload_response and len(uploads) == 1:
+                raise ValueError("Upload response lost after commit")
             return response.json()
 
         client.request = request
         monkeypatch.setattr("linkedin_automation.infrastructure.search_worker.sync_transfer", sync)
+        if lost_upload_response and outcome in {"matched", "rejected"}:
+            with pytest.raises(ValueError):
+                run_worker(client, Path("config"), once=True)
         run_worker(client, Path("config"), once=True)
+        assert len(collections) == 1
         state = http.get("/api/search/settings").json()
         assert state["jobs"][0]["status"] == ("failed" if outcome == "restricted" else "completed")
         assert state["jobs"][0]["result"]["accepted"] == int(outcome == "matched")

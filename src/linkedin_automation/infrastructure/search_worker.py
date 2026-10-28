@@ -5,6 +5,7 @@ import json
 import os
 import time
 from contextlib import closing, suppress
+from hashlib import sha256
 from pathlib import Path
 from threading import Event, Thread
 from urllib.error import HTTPError, URLError
@@ -17,10 +18,14 @@ import yaml
 from linkedin_automation.application.campaigns import CampaignPolicy, compile_campaign
 from linkedin_automation.application.exceptions import (
     AuthenticationRequiredError,
+    BrowserClosedError,
+    LayoutChangedError,
     LimitedVisibilityError,
+    RateLimitedError,
     SecurityChallengeError,
 )
 from linkedin_automation.application.research_transfer import export_research_transfer
+from linkedin_automation.application.run_transfer import RunTransfer
 from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.domain.search_definition import SearchDefinition
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
@@ -30,6 +35,12 @@ from linkedin_automation.infrastructure.reporting import ExcelReportWriter
 from linkedin_automation.infrastructure.run_sync import _NoRedirect, sync_transfer
 from linkedin_automation.infrastructure.runtime import RuntimeSettings
 from linkedin_automation.interfaces.search_jobs import configured_campaigns, definition_hash
+
+
+class DashboardRejectedError(ValueError):
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__(f"Dashboard worker request rejected (HTTP {status})")
 
 
 class DashboardClient:
@@ -69,9 +80,56 @@ class DashboardClient:
             with build_opener(_NoRedirect).open(request, timeout=30) as response:
                 return json.loads(response.read(1_000_000))
         except HTTPError as error:
-            raise ValueError(f"Dashboard worker request rejected (HTTP {error.code})") from None
-        except URLError:
+            raise DashboardRejectedError(error.code) from None
+        except (URLError, TimeoutError, OSError):
             raise ValueError("Cannot reach dashboard") from None
+
+
+class PendingCompletion:
+    """Local durable handoff, isolated by destination and reviewer account."""
+
+    def __init__(self, client: DashboardClient):
+        scope = sha256(f"{client.url}\n{client.username}".encode()).hexdigest()
+        self.path = (
+            RuntimeSettings.from_environment().artifact_dir / "worker-pending" / f"{scope}.json"
+        )
+
+    def save(self, job: dict, result: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"id": str(UUID(job["id"])), "token": job["token"], "result": result}),
+            encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        temporary.replace(self.path)
+
+    def deliver(self, client: DashboardClient) -> None:
+        if not self.path.exists():
+            return
+        pending = json.loads(self.path.read_text(encoding="utf-8"))
+        result = dict(pending["result"])
+        transfer = result.pop("_transfer", None)
+        if transfer:
+            sync_transfer(
+                RunTransfer.model_validate(transfer),
+                client.url,
+                client.username,
+                client.password,
+                include_observations=True,
+            )
+        try:
+            client.request(
+                f"/api/search/jobs/{UUID(pending['id'])}/complete",
+                {"token": pending["token"], **result},
+            )
+        except DashboardRejectedError as error:
+            if error.status != 409:
+                raise
+            # Expired claims cannot be revived. Research is already synced by run ID,
+            # and the local repository retains the original observations.
+            print("Pending result synced; search claim expired. No search repeated.", flush=True)
+        self.path.unlink()
 
 
 def validate_job(job: dict, config_dir: Path) -> SearchDefinition:
@@ -122,12 +180,10 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
         )
         result = workflow.start(definition_file, dry_run=False, upload=False)
         observations = repository.list_observations(result.run.id)
-        if observations:
-            transfer = export_research_transfer(result.run, observations)
-            sync_transfer(
-                transfer, client.url, client.username, client.password, include_observations=True
-            )
         return {
+            "_transfer": export_research_transfer(result.run, observations).model_dump(mode="json")
+            if observations
+            else None,
             "status": "completed",
             "run_id": str(result.run.id),
             "observed": result.run.counters.observed,
@@ -144,8 +200,11 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
 
 def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False) -> None:
     print("Browser worker ready. Only search and review sync are enabled.", flush=True)
+    pending = PendingCompletion(client)
     while True:
         try:
+            # Never launch another browser search while an earlier handoff is pending.
+            pending.deliver(client)
             job = client.request("/api/search/claim")["job"]
             if job:
                 print(f"Running search job {job['id']}", flush=True)
@@ -168,8 +227,23 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                         )
                     elif isinstance(error, (AuthenticationRequiredError, SecurityChallengeError)):
                         message = (
-                            "LinkedIn sign-in or security verification is required "
-                            "on the worker computer."
+                            "LinkedIn sign-in or security verification is required. "
+                            "Complete manual login on the worker computer, then start a new search."
+                        )
+                    elif isinstance(error, BrowserClosedError):
+                        message = (
+                            "The LinkedIn browser was closed. Start a new search and leave "
+                            "its browser open until collection finishes."
+                        )
+                    elif isinstance(error, RateLimitedError):
+                        message = (
+                            "LinkedIn requested a pause. Stop searching and review the "
+                            "account notice before starting another search."
+                        )
+                    elif isinstance(error, LayoutChangedError):
+                        message = (
+                            "LinkedIn did not load a readable page. Check internet access "
+                            "and the browser page before starting a new search."
                         )
                     else:
                         message = (
@@ -186,15 +260,16 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                 finally:
                     stop.set()
                     thread.join(timeout=35)
-                client.request(
-                    f"/api/search/jobs/{job['id']}/complete", {"token": job["token"], **result}
-                )
+                pending.save(job, result)
+                pending.deliver(client)
                 print(f"Search job {job['id']}: {result['status']}", flush=True)
             if once:
                 return
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TimeoutError, OSError):
             print(
-                "Worker connection unavailable; retrying without exposing credentials.", flush=True
+                "Worker handoff unavailable. Pending results are kept locally; "
+                "retrying without repeating collection or exposing credentials.",
+                flush=True,
             )
             if once:
                 raise
