@@ -210,13 +210,17 @@ Exit criteria: strict matching prevents location-only acceptance; fund evidence 
 follow-up messaging is gated on recorded acceptance; the site performs no LinkedIn send action;
 and all migrations and automated quality checks pass.
 
-### Phase 7B - Approved LinkedIn Communications Adapter
+### Phase 7B - Authorized LinkedIn Browser Delivery
 
-Status: Blocked on approved LinkedIn partner access
+Status: Implemented with isolated database and offline browser verification; live delivery
+validation requires a named recipient and exact draft authorization.
 
-Direct invitation and messaging calls may be implemented only after valid LinkedIn API approval,
-scopes, credentials, rate limits, and audit requirements are supplied. Browser-based sending is
-not an acceptable substitute.
+The user requested automatic qualification and a functional outreach pipeline. Complete profiles
+passing saved campaign rules may be approved and queued automatically. The local browser worker
+handles explicitly authorized invitations, acceptance checks and follow-ups. It preserves daily
+limits, blocks uncertain retries and verifies the recipient and result before recording delivery.
+Public web discovery still awaits the separately configured search API key; it does not unlock
+LinkedIn profiles hidden by account access.
 
 ## 3. Next Recommended Task
 

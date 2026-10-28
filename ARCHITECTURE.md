@@ -514,18 +514,24 @@ funds in GBP, evidence URL and notes, score, editable connection and follow-up d
 review timestamp. Reports add an `Outreach Review` sheet. A local FastAPI site supports evidence
 review, approval, draft editing, LinkedIn profile handoff, and lifecycle tracking.
 
-Connection invitations and messages are human-reviewed and manually sent by default. Follow-up
-copy becomes actionable only after connection acceptance is recorded. Direct sending requires an
-approved LinkedIn partner API adapter; browser automation must never send invitations or messages.
+Manual outreach remains available. The hosted workspace also supports the authorized browser
+delivery workflow requested for this project: qualification and queue preparation can run
+automatically, while delivery requires review of the named recipient and exact draft. Follow-up
+delivery requires both explicit draft authorization and observed connection acceptance.
 
 ### ADR-006: Evidence before outreach
 
-The minimum-funds requirement is company-level evidence and cannot be inferred reliably from a
-person profile. A lead cannot advance beyond verification without a recorded evidence URL and a
-value meeting the configured threshold.
+Funds requirements are campaign-specific. A funds-required campaign needs independently checked
+evidence and the configured amount; profile AUM is never inferred to be available personal funds.
+Funds-optional campaigns can qualify on their own configured role, firm, location and score rules.
+Incomplete or ambiguous current profile facts prevent automatic approval.
 
-### ADR-007: Approved communications adapters only
+### ADR-007: Explicitly authorized, observable communications
 
-The application may generate drafts and track states. It may send LinkedIn actions only through
-an approved API adapter with explicit credentials and audit controls. Missing API access keeps
-the system in manual-handoff mode.
+The current hosted workflow uses a local, manually authenticated browser worker. It claims only
+explicitly authorized jobs from the service's durable queue; the hosted server never opens the
+account browser. Invitations, acceptance checks and follow-ups have separate state transitions.
+Daily limits, profile URL deduplication, recipient verification and exact draft snapshots apply.
+A result is recorded only from the observed recipient state. Unknown outcomes pause delivery;
+durable local handoffs retry result reporting rather than sending again. Manual activity and
+automated receipts are reconciled, and original research observations remain unchanged.
