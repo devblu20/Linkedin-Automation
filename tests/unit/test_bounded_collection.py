@@ -72,7 +72,16 @@ class SearchPage:
         return self.locator("main")
 
 
-def collect(monkeypatch, tmp_path, pages, limit=5, redirect=None, unreadable=False):
+def collect(
+    monkeypatch,
+    tmp_path,
+    pages,
+    limit=5,
+    redirect=None,
+    unreadable=False,
+    checkpoint=None,
+    close_at=None,
+):
     page = SearchPage(pages)
     if redirect:
         original_goto = page.goto
@@ -96,6 +105,8 @@ def collect(monkeypatch, tmp_path, pages, limit=5, redirect=None, unreadable=Fal
     )
 
     def extract(p, candidate):
+        if close_at and candidate.full_name == close_at:
+            raise PlaywrightTimeoutError("Browser has been closed")
         if unreadable == "closed":
             raise PlaywrightTimeoutError("Target page, context or browser has been closed")
         if unreadable:
@@ -121,7 +132,9 @@ def collect(monkeypatch, tmp_path, pages, limit=5, redirect=None, unreadable=Fal
         }
     )
     collector = PlaywrightLinkedInCollector(
-        browser_data_dir=tmp_path / "browser", screenshot_dir=tmp_path / "shots"
+        browser_data_dir=tmp_path / "browser",
+        screenshot_dir=tmp_path / "shots",
+        checkpoint_file=checkpoint,
     )
     return collector.collect(definition), page
 
@@ -195,3 +208,20 @@ def test_closed_browser_stops_instead_of_reporting_empty_success(monkeypatch, tm
         collect(monkeypatch, tmp_path, [([anchor("A")], 9)], unreadable="closed")
     assert stopped.value.pages_visited == 1
     assert stopped.value.hidden_result_cards == 9
+
+
+def test_resume_preserves_profiles_and_never_revisits_reserved_attempts(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "checkpoint.json"
+    pages = [([anchor("A"), anchor("B"), anchor("C")], 7)]
+    with pytest.raises(BrowserClosedError):
+        collect(monkeypatch, tmp_path, pages, limit=3, checkpoint=checkpoint, close_at="B")
+    batch, page = collect(monkeypatch, tmp_path, pages, limit=3, checkpoint=checkpoint)
+    assert [x.full_name for x in batch.candidates] == ["A", "C"]
+    assert page.profile_visits == ["https://www.linkedin.com/in/C/"]
+    assert batch.pages_visited == 1
+    assert batch.hidden_result_cards == 7
+    cached, page = collect(monkeypatch, tmp_path, pages, limit=3, checkpoint=checkpoint)
+    assert cached == batch
+    assert page.profile_visits == [] and page.queries == []
+    with pytest.raises(ValueError, match="different campaign"):
+        collect(monkeypatch, tmp_path, pages, limit=4, checkpoint=checkpoint)

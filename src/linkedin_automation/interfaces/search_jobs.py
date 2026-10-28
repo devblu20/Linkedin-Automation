@@ -37,6 +37,7 @@ class SearchCompletion(BaseModel):
     hidden_result_cards: int = Field(default=0, ge=0, le=1000)
     rejection_counts: dict[str, int] = Field(default_factory=dict, max_length=10)
     message: str = Field(default="", max_length=500)
+    resume_available: bool = False
 
 
 def configured_campaigns(root: Path) -> dict:
@@ -90,6 +91,8 @@ class SearchJobs:
                 db.execute("ALTER TABLE search_jobs ADD COLUMN policy TEXT")
             if "completion_hash" not in columns:
                 db.execute("ALTER TABLE search_jobs ADD COLUMN completion_hash TEXT")
+            if "checkpoint_id" not in columns:
+                db.execute("ALTER TABLE search_jobs ADD COLUMN checkpoint_id TEXT")
 
     @contextmanager
     def connection(self):
@@ -151,6 +154,21 @@ class SearchJobs:
     def expire(self, db):
         cutoff = time.time() - 1800
         db.execute(
+            "UPDATE search_jobs SET status='failed', finished=?, token=NULL, result=? "
+            "WHERE status='running' AND started < ?",
+            (
+                time.time(),
+                json.dumps(
+                    {
+                        "message": "Worker search expired. Resume on the original "
+                        "worker computer if a checkpoint exists.",
+                        "resume_available": True,
+                    }
+                ),
+                cutoff,
+            ),
+        )
+        db.execute(
             "UPDATE search_jobs SET status='failed', finished=?, result=? "
             "WHERE status IN ('queued','running') AND COALESCE(started,created) < ?",
             (
@@ -188,6 +206,52 @@ class SearchJobs:
                 "definition": json.loads(row["definition"]),
                 "token": token,
                 "policy": json.loads(row["policy"]) if row["policy"] else None,
+                "checkpoint_id": row["checkpoint_id"] or row["id"],
+            }
+
+    def resume(self, identifier: UUID) -> dict:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.expire(db)
+            row = db.execute("SELECT * FROM search_jobs WHERE id=?", (str(identifier),)).fetchone()
+            if (
+                row is None
+                or row["status"] != "failed"
+                or not json.loads(row["result"] or "{}").get("resume_available")
+            ):
+                raise ValueError("This search has no resumable interruption")
+            if db.execute(
+                "SELECT 1 FROM search_jobs WHERE status IN ('queued','running')"
+            ).fetchone():
+                raise ValueError("Another search is queued or running")
+            new_id = str(uuid4())
+            previous_result = json.loads(row["result"] or "{}")
+            previous_result["resume_available"] = False
+            db.execute(
+                "UPDATE search_jobs SET result=? WHERE id=?",
+                (json.dumps(previous_result), str(identifier)),
+            )
+            db.execute(
+                "INSERT INTO search_jobs "
+                "(id,campaign,name,definition,base_hash,status,created,policy,checkpoint_id) "
+                "VALUES (?,?,?,?,?,'queued',?,?,?)",
+                (
+                    new_id,
+                    row["campaign"],
+                    row["name"],
+                    row["definition"],
+                    row["base_hash"],
+                    time.time(),
+                    row["policy"],
+                    row["checkpoint_id"] or row["id"],
+                ),
+            )
+            limits = json.loads(row["definition"])["limits"]
+            return {
+                "id": new_id,
+                "status": "queued",
+                "campaign": row["name"],
+                "requested": {"profiles": limits["max_results"], "pages": limits["max_pages"]},
             }
 
     def complete(self, identifier: UUID, result: SearchCompletion) -> None:
@@ -296,5 +360,12 @@ def install_hosted_search(app: FastAPI, root: Path, config_dir: Path) -> None:
         try:
             store.complete(identifier, payload)
             return {"ok": True}
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/search/jobs/{identifier}/resume")
+    def resume(identifier: UUID):
+        try:
+            return store.resume(identifier)
         except ValueError as error:
             raise HTTPException(409, str(error)) from error

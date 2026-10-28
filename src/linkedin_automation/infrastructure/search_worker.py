@@ -160,9 +160,22 @@ def validate_job(job: dict, config_dir: Path) -> SearchDefinition:
     return requested
 
 
+def checkpoint_path(client: DashboardClient, job: dict) -> Path:
+    scope = sha256(f"{client.url}\n{client.username}".encode()).hexdigest()
+    return (
+        RuntimeSettings.from_environment().artifact_dir
+        / "browser-checkpoints"
+        / scope
+        / f"{UUID(job.get('checkpoint_id') or job['id'])}.json"
+    )
+
+
 def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
     definition = validate_job(job, config_dir)
     settings = RuntimeSettings.from_environment()
+    checkpoint = checkpoint_path(client, job)
+    if job.get("checkpoint_id", job["id"]) != job["id"] and not checkpoint.exists():
+        raise ValueError("Resume requires the original worker computer and its checkpoint")
     requests_dir = settings.artifact_dir / "search-requests"
     requests_dir.mkdir(parents=True, exist_ok=True)
     definition_file = requests_dir / f"{UUID(job['id'])}.yaml"
@@ -175,6 +188,7 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
                 browser_data_dir=settings.browser_data_dir,
                 screenshot_dir=settings.screenshot_dir,
                 browser_channel=os.getenv("LINKEDIN_AUTOMATION_BROWSER_CHANNEL") or "chrome",
+                checkpoint_file=checkpoint,
             ),
             reporter=ExcelReportWriter(settings.artifact_dir),
         )
@@ -194,7 +208,9 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
             "rejection_counts": result.rejection_counts,
             "message": "Search completed. Matching profiles are saved for review."
             if result.lead_count
-            else "No read profiles met this campaign's criteria.",
+            else "No read profiles met this campaign's criteria."
+            if result.run.counters.observed
+            else "No readable profiles were collected within the remaining visit budget.",
         }
 
 
@@ -245,6 +261,10 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                             "LinkedIn did not load a readable page. Check internet access "
                             "and the browser page before starting a new search."
                         )
+                    elif isinstance(error, ValueError) and str(error).startswith("Resume requires"):
+                        message = (
+                            "Resume requires the original worker computer and its saved checkpoint."
+                        )
                     else:
                         message = (
                             "Search could not finish or sync. Check the local worker "
@@ -256,6 +276,16 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                         "message": message,
                         "pages_visited": getattr(error, "pages_visited", 0),
                         "hidden_result_cards": getattr(error, "hidden_result_cards", 0),
+                        "resume_available": isinstance(
+                            error,
+                            (
+                                BrowserClosedError,
+                                AuthenticationRequiredError,
+                                SecurityChallengeError,
+                                LayoutChangedError,
+                            ),
+                        )
+                        and checkpoint_path(client, job).exists(),
                     }
                 finally:
                     stop.set()

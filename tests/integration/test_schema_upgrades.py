@@ -23,7 +23,7 @@ def test_bootstrap_then_alembic_upgrade_is_safe(tmp_path: Path, monkeypatch: pyt
     command.upgrade(migration_config(database, monkeypatch), "head")
     engine = create_engine(f"sqlite:///{database.as_posix()}")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
     engine.dispose()
 
 
@@ -38,7 +38,7 @@ def test_repairs_only_complete_misstamped_database(tmp_path: Path):
         connection.execute(text("INSERT INTO preserved_data VALUES ('keep me')"))
     repository.initialize()
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
         assert connection.scalar(text("SELECT value FROM preserved_data")) == "keep me"
     repository.close()
     engine.dispose()
@@ -58,4 +58,21 @@ def test_old_schema_requires_actual_migration(tmp_path: Path, monkeypatch: pytes
     command.upgrade(config, "head")
     repository.initialize()
     repository.close()
+    engine.dispose()
+
+
+def test_additive_activity_upgrade_preserves_existing_database(tmp_path, monkeypatch):
+    database = tmp_path / "v4.sqlite3"
+    command.upgrade(migration_config(database, monkeypatch), "0004")
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE preserved_data (value TEXT)"))
+        connection.execute(text("INSERT INTO preserved_data VALUES ('unchanged')"))
+    repository = SqliteResearchRepository(database)
+    repository.initialize()
+    repository.close()
+    assert "manual_activities" in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT value FROM preserved_data")) == "unchanged"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
     engine.dispose()

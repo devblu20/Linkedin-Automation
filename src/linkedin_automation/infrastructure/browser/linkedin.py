@@ -34,6 +34,7 @@ from linkedin_automation.domain.services import (
     LeadProcessingError,
     canonicalize_linkedin_profile_url,
 )
+from linkedin_automation.infrastructure.browser.checkpoint import BrowserCheckpoint
 
 logger = logging.getLogger(__name__)
 _BASE_SEARCH_URL = "https://www.linkedin.com/search/results/people/"
@@ -475,7 +476,7 @@ def read_page_snapshot(page: Page, timeout_seconds: float = 10) -> tuple[str, st
     deadline = time.monotonic() + timeout_seconds
     while True:
         if page.is_closed():
-            raise CollectionError("LinkedIn browser was closed; resume the run to continue")
+            raise BrowserClosedError("LinkedIn browser was closed; resume the run to continue")
         try:
             return page.url, page.title(), page.content()
         except PlaywrightError as error:
@@ -492,7 +493,7 @@ def read_page_snapshot(page: Page, timeout_seconds: float = 10) -> tuple[str, st
             try:
                 page.wait_for_timeout(250)
             except PlaywrightError as closed:
-                raise CollectionError("LinkedIn browser closed during navigation") from closed
+                raise BrowserClosedError("LinkedIn browser closed during navigation") from closed
 
 
 class PlaywrightLinkedInCollector:
@@ -509,6 +510,7 @@ class PlaywrightLinkedInCollector:
         authentication_timeout_ms: int = 300_000,
         headless: bool = False,
         browser_channel: str | None = None,
+        checkpoint_file: Path | None = None,
     ) -> None:
         if min_delay_seconds < 0 or max_delay_seconds < min_delay_seconds:
             raise ValueError("browser delay range is invalid")
@@ -522,6 +524,7 @@ class PlaywrightLinkedInCollector:
         if browser_channel not in {None, "chrome", "msedge"}:
             raise ValueError("browser_channel must be chrome or msedge")
         self._browser_channel = browser_channel
+        self._checkpoint_file = checkpoint_file
 
     def collect(
         self, definition: SearchDefinition, *, start_page: int = 1, dry_run: bool = False
@@ -534,13 +537,40 @@ class PlaywrightLinkedInCollector:
 
         self._browser_data_dir.mkdir(parents=True, exist_ok=True)
         self._screenshot_dir.mkdir(parents=True, exist_ok=True)
-        candidates: list[LeadCandidate] = []
-        seen_urls: set[str] = set()
-        last_page = start_page - 1
-        pages_visited = 0
-        profile_attempts = 0
-        hidden_result_cards = 0
-        restricted_search = False
+        checkpoint = BrowserCheckpoint(self._checkpoint_file, definition)
+        progress = checkpoint.load()
+        candidates = progress.candidates
+        seen_urls = progress.seen_urls
+        last_page = max(start_page - 1, progress.last_page)
+        pages_visited = len(progress.visited_steps)
+        profile_attempts = progress.profile_attempts
+        hidden_result_cards = progress.hidden_result_cards
+        restricted_search = progress.restricted_search
+        if (
+            last_page >= definition.limits.max_pages
+            or profile_attempts >= definition.limits.max_results
+        ):
+            if not candidates and (hidden_result_cards or restricted_search):
+                raise LimitedVisibilityError(
+                    "Saved search contains only restricted results",
+                    pages_visited=pages_visited,
+                    hidden_result_cards=hidden_result_cards,
+                )
+            return CollectionBatch(
+                tuple(candidates),
+                checkpoint_page=last_page,
+                complete=True,
+                pages_visited=pages_visited,
+                hidden_result_cards=hidden_result_cards,
+            )
+
+        def save_progress():
+            progress.last_page = last_page
+            progress.profile_attempts = profile_attempts
+            progress.hidden_result_cards = hidden_result_cards
+            progress.restricted_search = restricted_search
+            checkpoint.save(progress)
+
         search_steps = build_people_search_steps(definition)
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
@@ -550,7 +580,7 @@ class PlaywrightLinkedInCollector:
             page.set_default_timeout(self._timeout)
             try:
                 try:
-                    for step_number in range(start_page, definition.limits.max_pages + 1):
+                    for step_number in range(last_page + 1, definition.limits.max_pages + 1):
                         search_term, result_page = search_steps[step_number - 1]
                         source_url = build_people_search_url(
                             definition, result_page, search_term=search_term
@@ -634,10 +664,15 @@ class PlaywrightLinkedInCollector:
                             )
                         current_url, title, html = read_page_snapshot(page)
                         self._raise_for_safety_state(current_url, title, html)
-                        pages_visited += 1
-                        hidden_result_cards += (
-                            page.locator("main").get_by_text("LinkedIn Member", exact=True).count()
-                        )
+                        if step_number not in progress.visited_steps:
+                            progress.visited_steps.add(step_number)
+                            pages_visited += 1
+                            hidden_result_cards += (
+                                page.locator("main")
+                                .get_by_text("LinkedIn Member", exact=True)
+                                .count()
+                            )
+                        save_progress()
                         try:
                             rendered_anchors = page.locator(SEARCH_CARD_SELECTOR).evaluate_all(
                                 SEARCH_CARD_SCRIPT
@@ -658,6 +693,7 @@ class PlaywrightLinkedInCollector:
                             self._capture(page, step_number)
                             if is_empty_search_results(html):
                                 last_page = step_number
+                                save_progress()
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
                             if is_limited_search_results(html):
@@ -665,6 +701,7 @@ class PlaywrightLinkedInCollector:
                                 # This query may be hidden while another configured term
                                 # has normal accessible results. Respect the bounded plan.
                                 last_page = step_number
+                                save_progress()
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
                             if page.get_by_text("LinkedIn Member", exact=True).count():
@@ -673,6 +710,7 @@ class PlaywrightLinkedInCollector:
                                     extra={"step": step_number, "source_url": source_url},
                                 )
                                 last_page = step_number
+                                save_progress()
                                 time.sleep(random.uniform(self._min_delay, self._max_delay))
                                 continue
                             if candidates:
@@ -704,6 +742,9 @@ class PlaywrightLinkedInCollector:
                         for candidate in unique_candidates[:remaining]:
                             profile_attempts += 1
                             seen_urls.add(candidate.profile_url)
+                            # Reserve the visit before navigation. A killed process must
+                            # not repeat a visit or reset its original search budget.
+                            save_progress()
                             try:
                                 page.goto(
                                     candidate.profile_url,
@@ -723,7 +764,10 @@ class PlaywrightLinkedInCollector:
                                         },
                                     )
                                     continue
-                                accepted_candidates.append(extract_visible_profile(page, candidate))
+                                fresh = extract_visible_profile(page, candidate)
+                                accepted_candidates.append(fresh)
+                                candidates.append(fresh)
+                                save_progress()
                             except PlaywrightError as error:
                                 if page.is_closed() or "closed" in str(error).casefold():
                                     raise BrowserClosedError(
@@ -738,9 +782,9 @@ class PlaywrightLinkedInCollector:
                                     "linkedin_profile_unreadable_skipped",
                                     extra={"profile_url": candidate.profile_url},
                                 )
-                        candidates.extend(accepted_candidates)
                         seen_urls.update(candidate.profile_url for candidate in accepted_candidates)
                         last_page = step_number
+                        save_progress()
                         if profile_attempts >= definition.limits.max_results:
                             break
                         time.sleep(random.uniform(self._min_delay, self._max_delay))

@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
@@ -38,7 +39,8 @@ from linkedin_automation.domain.models import (
     RunCounters,
     SentMessage,
 )
-from linkedin_automation.domain.services import merge_duplicate
+from linkedin_automation.domain.search_definition import SearchDefinition
+from linkedin_automation.domain.services import merge_duplicate, qualification_assessment
 
 
 class Base(DeclarativeBase):
@@ -146,6 +148,22 @@ class ConnectionRequestRow(Base):
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str] = mapped_column(Text, default="")
+
+
+class ManualActivityRow(Base):
+    __tablename__ = "manual_activities"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    lead_id: Mapped[str] = mapped_column(String(36), ForeignKey("leads.id"), index=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("research_runs.id"), index=True)
+    action: Mapped[str] = mapped_column(String(32))
+    from_status: Mapped[str] = mapped_column(String(32))
+    to_status: Mapped[str] = mapped_column(String(32))
+    note: Mapped[str] = mapped_column(Text)
+    source_url: Mapped[str] = mapped_column(Text)
+    draft_snapshot: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class SentMessageRow(Base):
@@ -272,6 +290,7 @@ class DatabaseResearchRepository:
                     {column["name"] for column in inspector.get_columns(table.name)}
                 )
                 for table in Base.metadata.sorted_tables
+                if table.name != "manual_activities" or table.name in tables
             )
             if not complete:
                 raise RuntimeError(
@@ -279,7 +298,8 @@ class DatabaseResearchRepository:
                     "alembic upgrade head with LINKEDIN_AUTOMATION_MIGRATION_URL set."
                 )
         Base.metadata.create_all(self._engine)
-        # This metadata includes every column through migration 0004. Earlier
+        # The sole additive 0005 table is safe to create without rewriting old rows.
+        # This metadata includes every column through migration 0005. Earlier
         # releases incorrectly stamped a complete bootstrap as 0003.
         with self._engine.begin() as connection:
             connection.execute(
@@ -291,10 +311,10 @@ class DatabaseResearchRepository:
             current = connection.scalar(text("SELECT version_num FROM alembic_version LIMIT 1"))
             if current is None:
                 connection.execute(
-                    text("INSERT INTO alembic_version (version_num) VALUES ('0004')")
+                    text("INSERT INTO alembic_version (version_num) VALUES ('0005')")
                 )
-            elif current in {"0001", "0002", "0003"}:
-                connection.execute(text("UPDATE alembic_version SET version_num = '0004'"))
+            elif current in {"0001", "0002", "0003", "0004"}:
+                connection.execute(text("UPDATE alembic_version SET version_num = '0005'"))
 
     def database_location(self) -> str:
         """Return a password-safe description of the configured database."""
@@ -592,6 +612,156 @@ class DatabaseResearchRepository:
                 .where(ObservationRow.collected_at >= since)
             )
             return int(value or 0)
+
+    def record_manual_activity(self, lead_id: UUID, values: dict) -> None:
+        fingerprint = sha256(
+            json.dumps({"lead_id": str(lead_id), **values}, sort_keys=True).encode()
+        ).hexdigest()
+        with Session(self._engine) as session:
+            if self._engine.dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
+            previous = session.get(ManualActivityRow, values["id"])
+            if previous:
+                if previous.payload_hash != fingerprint:
+                    raise ValueError("Activity ID already belongs to different details")
+                return
+            row = session.scalar(
+                select(OutreachRow).where(OutreachRow.lead_id == str(lead_id)).with_for_update()
+            )
+            if row is None or row.status != values["expected_status"]:
+                raise ValueError("Lead status changed. Refresh before recording activity")
+            transitions = {
+                "connection_sent": {"approved", "connection_queued"},
+                "connected": {"connection_sent"},
+                "message_sent": {"connected", "message_ready"},
+            }
+            action = values["action"]
+            if action != "evidence_checked" and row.status not in transitions.get(action, set()):
+                raise ValueError("Record approval, request and acceptance in order")
+            draft = (
+                row.connection_message
+                if action == "connection_sent"
+                else row.follow_up_message
+                if action == "message_sent"
+                else ""
+            )
+            if action in {"connection_sent", "message_sent"} and not draft.strip():
+                raise ValueError("Save the actual message draft before recording it as sent")
+            now = datetime.now(UTC)
+            target = row.status if action == "evidence_checked" else action
+            supplements = values.get("profile_updates") or {}
+            if supplements:
+                if action != "evidence_checked" or row.status not in {
+                    "needs_verification",
+                    "ready_for_review",
+                    "approved",
+                    "rejected",
+                }:
+                    raise ValueError("Supplement profile data before recording outreach")
+                profile = session.get(LeadRow, str(lead_id))
+                for key in supplements:
+                    original = (
+                        json.loads(profile.experience_json)
+                        if key == "experience"
+                        else getattr(profile, key)
+                    )
+                    if original:
+                        raise ValueError(
+                            "Only missing profile fields can be supplemented; "
+                            "original facts are preserved"
+                        )
+                draft = json.dumps({"source": "reviewer_supplied", "supplements": supplements})
+                for key, value in supplements.items():
+                    if key == "experience":
+                        profile.experience_json = json.dumps(value.splitlines()[:100])
+                    else:
+                        setattr(profile, key, value)
+                run = session.get(RunRow, row.run_id)
+                row.score = qualification_assessment(
+                    _lead_from_row(profile),
+                    SearchDefinition.model_validate_json(run.definition_json),
+                    firm_type=row.firm_type,
+                    funds_gbp=row.funds_gbp,
+                    fund_evidence_url=row.fund_evidence_url,
+                )["score"]
+                target = "needs_verification"
+            session.add(
+                ManualActivityRow(
+                    id=values["id"],
+                    lead_id=str(lead_id),
+                    run_id=row.run_id,
+                    action=action,
+                    from_status=row.status,
+                    to_status=target,
+                    note=values["note"],
+                    source_url=values["source_url"],
+                    draft_snapshot=draft,
+                    payload_hash=fingerprint,
+                    created_at=now,
+                )
+            )
+            if action == "connection_sent":
+                session.add(
+                    ConnectionRequestRow(
+                        id=str(uuid4()),
+                        lead_id=str(lead_id),
+                        run_id=row.run_id,
+                        status="sent",
+                        requested_at=now,
+                        updated_at=now,
+                        error_message="",
+                    )
+                )
+            elif action == "connected":
+                request = session.scalar(
+                    select(ConnectionRequestRow)
+                    .where(
+                        ConnectionRequestRow.lead_id == str(lead_id),
+                        ConnectionRequestRow.status == "sent",
+                    )
+                    .order_by(ConnectionRequestRow.requested_at.desc())
+                    .limit(1)
+                )
+                if request:
+                    request.status = "accepted"
+                    request.updated_at = now
+            elif action == "message_sent":
+                session.add(
+                    SentMessageRow(
+                        id=str(uuid4()),
+                        lead_id=str(lead_id),
+                        run_id=row.run_id,
+                        content=draft,
+                        status="sent",
+                        sent_at=now,
+                        error_message="",
+                    )
+                )
+            row.status = target
+            row.updated_at = now
+            session.commit()
+
+    def list_manual_activities(self, lead_id: UUID) -> list[dict]:
+        with Session(self._engine) as session:
+            rows = session.scalars(
+                select(ManualActivityRow)
+                .where(ManualActivityRow.lead_id == str(lead_id))
+                .order_by(ManualActivityRow.created_at.desc())
+            ).all()
+            return [
+                {
+                    "id": r.id,
+                    "action": r.action,
+                    "from_status": r.from_status,
+                    "to_status": r.to_status,
+                    "note": r.note,
+                    "source_url": r.source_url,
+                    "draft_snapshot": r.draft_snapshot,
+                    "created_at": _aware(r.created_at),
+                    "recorded_manually": True,
+                }
+                for r in rows
+            ]
 
     def add_connection_request(self, request: ConnectionRequest) -> None:
         with Session(self._engine) as session:

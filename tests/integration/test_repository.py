@@ -56,7 +56,7 @@ def test_persists_runs_and_deduplicates_leads(tmp_path: Path) -> None:
     assert leads[0].company == "Lab"
     inspection_engine = create_engine(f"sqlite:///{database.as_posix()}")
     with inspection_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
     inspection_engine.dispose()
     repository.close()
     reopened.close()

@@ -17,12 +17,14 @@ SEARCH_PANEL = """<section class="panel" id="automaticSearch">
 <p id="searchPlan" style="padding:0 19px 10px;margin:0">Choose a campaign to preview its search queries.</p>
 <p id="searchRunLabel" style="padding:0 19px 5px;margin:0;font-weight:700"></p>
 <p id="searchResult" role="status" style="padding:0 19px 16px;margin:0">No search run selected yet.</p>
+<div style="padding:0 19px 16px"><button class="btn" id="resumeSearch" type="button" hidden>Resume interrupted search</button><span class="sub" id="resumeHint" hidden> Uses the original campaign, remaining limits and checkpoint on the original worker computer.</span></div>
 </section>"""
 
 SEARCH_SCRIPT = """<script>
 const searchForm=document.getElementById('searchForm'),searchButton=document.getElementById('searchButton'),searchResult=document.getElementById('searchResult'),searchCampaign=document.getElementById('searchCampaign'),workerStatus=document.getElementById('workerStatus'),searchDraft=document.getElementById('searchDraft');let campaignOptions=[],submitting=false;
 function showSearchJob(job){
 if(!job)return;const result=job.result||{},requested=job.requested||{};
+const resume=document.getElementById('resumeSearch');resume.hidden=!(job.status==='failed'&&result.resume_available);document.getElementById('resumeHint').hidden=resume.hidden;resume.dataset.job=job.id;
 document.getElementById('searchRunLabel').textContent=`Last search: ${job.campaign} · limit ${requested.profiles??'?'} profiles · up to ${requested.pages??'?'} pages · run ${job.id.slice(0,8)}`;
 let text='';
 if(job.status==='queued')text='Search queued. It will start when your browser worker is available.';
@@ -34,6 +36,7 @@ if(result.hidden_result_cards)text+=` LinkedIn hid ${result.hidden_result_cards}
 const reasons=Object.entries(result.rejection_counts||{}).map(([reason,count])=>`${reason}: ${count}`);if(reasons.length)text+=' Rejection reasons — '+reasons.join('; ')+'.';
 searchResult.textContent=text;
 }
+document.getElementById('resumeSearch').onclick=async e=>{const b=e.currentTarget;b.disabled=true;try{const r=await fetch('/api/search/jobs/'+b.dataset.job+'/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const data=await r.json();if(!r.ok)throw Error(data.detail||'Could not resume');showSearchJob(data);searchDraft.textContent='Resume queued. Keep the original worker computer online.';}catch(error){searchDraft.textContent=error.message}finally{b.disabled=false;await refreshSearch()}};
 async function refreshSearch(){try{const r=await fetch('/api/search/settings');if(!r.ok)throw Error('Cannot load search settings');const state=await r.json();const selected=searchCampaign.value;if(JSON.stringify(state.campaigns)!==JSON.stringify(campaignOptions)){campaignOptions=state.campaigns;searchCampaign.replaceChildren(new Option('Choose campaign',''));for(const item of campaignOptions)searchCampaign.add(new Option(item.name,item.id));searchCampaign.value=selected;}workerStatus.textContent=state.mode==='local'?'Uses your saved LinkedIn login on this computer.':state.worker_online?(state.jobs||[]).some(j=>j.status==='running')?'Browser worker online — search in progress.':'Browser worker online — ready to run searches.':(state.jobs||[]).some(j=>j.status==='running')?'Browser worker disconnected. Completed results will sync when it reconnects; an unfinished search may expire.':'Browser worker offline. Searches will wait until it is started on your computer.';const active=(state.jobs||[]).some(j=>['queued','running'].includes(j.status));searchButton.disabled=submitting||active||!campaignOptions.length;if(state.jobs?.length)showSearchJob(state.jobs[0]);if(!active)await Promise.all([load(),loadSummary()]);}catch(error){workerStatus.textContent=error.message;}}
 function renderSearchPlan(){const item=campaignOptions.find(x=>x.id===searchCampaign.value),limit=Number(document.getElementById('searchPages').value);document.getElementById('searchPlan').textContent=item?'Planned searches: '+(item.queries||[]).slice(0,limit).map(q=>`${q.term} (page ${q.page})`).join(' → '):'Choose a campaign to preview its search queries.';}
 function changedSearch(){searchDraft.textContent='Settings changed. Click Search and fetch to start a new run; the last result below is unchanged.';renderSearchPlan();}

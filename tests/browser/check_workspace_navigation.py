@@ -104,6 +104,49 @@ def main():
                 after = page.request.get(origin + "/api/leads").json()
                 assert after[0]["outreach"]["status"] == before[0]["outreach"]["status"]
 
+                page.get_by_role("button", name="Record / view activity", exact=True).click()
+                page.get_by_label("Industry (missing; optional)", exact=True).fill(
+                    "Investment services"
+                )
+                page.get_by_label("What did you verify or do?", exact=True).fill(
+                    "Verified industry in the local test source"
+                )
+                page.get_by_label(
+                    "I personally checked this evidence or completed this activity."
+                ).check()
+                page.get_by_role("button", name="Record activity", exact=True).click()
+                expect(page.locator("#activityDialog")).to_be_hidden()
+                assert (
+                    page.request.get(origin + "/api/leads").json()[0]["lead"]["industry"]
+                    == "Investment services"
+                )
+                page.get_by_role("button", name="Review / edit drafts").click()
+                page.get_by_label("Verified funds (GBP)", exact=True).fill("1000000")
+                page.get_by_label("Evidence URL", exact=True).fill("https://example.com/proof")
+                page.get_by_label("Status", exact=True).select_option("approved")
+                page.get_by_role("button", name="Save client", exact=True).click()
+                expect(page.locator("#editor")).to_be_hidden()
+                for action in ["connection_sent", "connected", "message_sent"]:
+                    page.get_by_role("button", name="Record / view activity", exact=True).click()
+                    page.get_by_label("Activity", exact=True).select_option(action)
+                    page.get_by_label("What did you verify or do?", exact=True).fill(
+                        "Recorded a manual step in the local browser test"
+                    )
+                    page.get_by_label(
+                        "I personally checked this evidence or completed this activity."
+                    ).check()
+                    page.get_by_role("button", name="Record activity", exact=True).click()
+                    expect(page.locator("#activityDialog")).to_be_hidden()
+                    expect(page.locator("#workspaceOutreachRows")).to_contain_text(
+                        action.replace("_", " ")
+                    )
+                page.get_by_role("button", name="Record / view activity", exact=True).click()
+                expect(page.locator("#activityHistory")).to_contain_text("recorded manually")
+                with page.expect_download() as history_download:
+                    page.get_by_role("link", name="Download history CSV").click()
+                assert history_download.value.suggested_filename.endswith(".csv")
+                page.get_by_role("button", name="Close activity", exact=True).click()
+
                 page.get_by_role("link", name="▦ Reports").click()
                 expect(page.locator("#workspaceRunRows tr")).to_have_count(1)
                 page.get_by_label("Lead review status", exact=True).select_option("approved")
@@ -128,6 +171,26 @@ def main():
                 expect(page.get_by_role("navigation", name="Workspace")).to_be_visible()
                 page.get_by_role("link", name="◎ Campaigns").click()
                 expect(page.locator("#campaignsView")).to_be_visible()
+                page.get_by_role("link", name="◆ Lead pipeline").click()
+                created = page.request.post(
+                    origin + "/api/search/jobs",
+                    data={
+                        "campaign": "bluqq-london-independent-traders.yaml",
+                        "max_results": 1,
+                        "max_pages": 1,
+                    },
+                ).json()
+                claimed = page.request.post(origin + "/api/search/claim", data={}).json()["job"]
+                assert claimed["id"] == created["id"]
+                page.request.post(
+                    origin + "/api/search/jobs/" + claimed["id"] + "/complete",
+                    data={"token": claimed["token"], "status": "failed", "resume_available": True},
+                )
+                page.reload()
+                expect(page.locator("#resumeSearch")).to_be_visible()
+                page.get_by_role("button", name="Resume interrupted search").click()
+                expect(page.locator("#searchResult")).to_contain_text("Search queued")
+                assert len(page.request.get(origin + "/api/search/settings").json()["jobs"]) == 2
                 assert not errors, errors
                 browser.close()
                 print(

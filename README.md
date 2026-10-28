@@ -228,9 +228,29 @@ password. Do not delete it while a result is awaiting upload.
 
 If a claim has expired after 30 minutes, the worker can still sync its finished research;
 the dashboard search remains expired and is not revived. A process killed *during* browser
-collection cannot recover an unfinished result automatically. Inspect the local run before
-starting another search. Login and security checks require manual action, and a closed browser
-is reported as an interrupted search. Hidden profiles remain inaccessible.
+collection can be resumed using **Resume interrupted search** after its claim expires. A normal
+browser-close, sign-in or page-load interruption offers resume immediately when a checkpoint
+exists. Resume uses the original worker computer, saved campaign rules and original remaining
+visit/page budget; visits reserved before a crash are not retried. Completed profiles are saved
+after each successful read in `artifacts/browser-checkpoints/`. A partially read search page may
+be opened again, but reserved profile visits are skipped. Keep this directory private and do not
+delete it before resuming. Login and security checks still require manual action. Hidden profiles
+remain inaccessible and source-requested rate limits are not automatically retried.
+
+### Evidence and manual outreach tracking
+
+From Outreach, choose **Record / view activity** to record a source you personally checked,
+fill missing company/current role/industry/experience, or record a manually sent request,
+connection acceptance and follow-up. Supplements require a source and confirmation, cannot
+overwrite collected fields, are audited, and return the lead to Needs verification. Original
+collected observations remain unchanged. Qualification shows available and missing profile data.
+
+Tracking advances only in order: approved → connection sent → connected → message sent.
+Confirmations are reviewer supplied, not verified by LinkedIn. Draft snapshots, source URLs,
+notes and server timestamps are retained in an append-only history with CSV download. Exact
+retries are idempotent; stale status updates are rejected. No tracking endpoint sends anything.
+Hosted review forms preserve tracked statuses and cannot fabricate or rewind delivery states.
+The additive `0005` migration creates only `manual_activities`; existing lead data is preserved.
 
 - Never commit `.env` files, OAuth credentials, tokens, cookies, browser profiles, databases,
   reports, screenshots, or collected personal data.

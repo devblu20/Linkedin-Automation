@@ -63,6 +63,21 @@ class OutreachReview:
             "lead_id": str(lead_id),
             "campaign": run.search_name,
             "status": record.status.value,
+            "source_profile": lead.profile_url,
+            "profile_observed_at": lead.last_observed_at.isoformat(),
+            "data_coverage": [
+                {"field": label, "available": bool(value)}
+                for label, value in (
+                    ("Company", lead.company),
+                    ("Current role", lead.current_title),
+                    ("Location", lead.location),
+                    ("Industry", lead.industry),
+                    ("About", lead.about),
+                    ("Experience", lead.experience),
+                    ("Education", lead.education),
+                    ("Skills", lead.skills),
+                )
+            ],
             "matched_criteria": list(lead.evidence.matched),
             "missing_fields": [
                 label

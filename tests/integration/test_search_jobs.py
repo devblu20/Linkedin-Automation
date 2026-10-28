@@ -96,6 +96,29 @@ def test_completion_retry_requires_identical_result_and_original_token(tmp_path)
         assert job["token"] not in row["completion_hash"]
 
 
+def test_resume_uses_original_rules_checkpoint_and_budget(tmp_path):
+    jobs = SearchJobs(tmp_path / "jobs.sqlite3")
+    jobs.enqueue(search_payload(), configured_campaigns(Path("config")))
+    first = jobs.claim()
+    jobs.complete(
+        UUID(first["id"]),
+        SearchCompletion(token=first["token"], status="failed", resume_available=True),
+    )
+    queued = jobs.resume(UUID(first["id"]))
+    with pytest.raises(ValueError):
+        jobs.resume(UUID(first["id"]))
+    resumed = jobs.claim()
+    assert resumed["id"] == queued["id"] != first["id"]
+    assert resumed["checkpoint_id"] == first["id"]
+    assert resumed["definition"] == first["definition"]
+    assert resumed["token"] != first["token"]
+    jobs.complete(UUID(resumed["id"]), SearchCompletion(token=resumed["token"], status="completed"))
+    with pytest.raises(ValueError):
+        jobs.resume(UUID(resumed["id"]))
+    with pytest.raises(ValueError):
+        jobs.resume(UUID(first["id"]))
+
+
 @pytest.mark.parametrize("outcome", ["matched", "rejected", "empty", "restricted"])
 @pytest.mark.parametrize("lost_upload_response", [False, True])
 def test_worker_claim_search_save_sync_and_status(
