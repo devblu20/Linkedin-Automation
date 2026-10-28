@@ -84,7 +84,9 @@ SEARCH_CARD_SELECTOR = (
     "main li.reusable-search__result-container, main li[data-lead-result]"
 )
 SEARCH_CARD_SCRIPT = r"""cards => cards.flatMap(card => {
-    if (!card.getClientRects().length) return [];
+    // LinkedIn uses display:contents on real result containers. Their children
+    // are visible even though the container has no layout rectangle. Check the
+    // actual profile link below, so hidden cards still cannot be collected.
     const text = card.innerText || '';
     const lines = text.split(/\n/).map(line => line.trim()).filter(Boolean);
     if (lines.length < 3 || lines[0].toLowerCase() === 'linkedin member') return [];

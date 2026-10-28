@@ -14,7 +14,7 @@ def main():
         browser = p.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page()
         page.set_content("""<main>
-        <div data-view-name="people-search-result">
+        <div data-view-name="people-search-result" style="display:contents">
         <a href="https://www.linkedin.com/in/accessible/">
         <p>Accessible Person</p><p>Independent Trader</p><p>London</p></a></div>
         <li class="reusable-search__result-container">
@@ -23,6 +23,9 @@ def main():
         <div data-view-name="people-search-result">
         <a href="https://www.linkedin.com/in/masked/">
         <p>LinkedIn Member</p><p>Independent Trader</p><p>London</p></a></div>
+        <div data-view-name="people-search-result" style="display:none">
+        <a href="https://www.linkedin.com/in/hidden/">
+        <p>Hidden Person</p><p>Independent Trader</p><p>London</p></a></div>
         <aside><a href="https://www.linkedin.com/in/recommendation/">
         <p>Recommended Person</p><p>Founder</p><p>London</p></a></aside>
         </main><nav><a href="https://www.linkedin.com/in/me/">
