@@ -19,4 +19,3 @@ el('deliveryForm').onsubmit=async e=>{e.preventDefault();const button=el('author
 refreshDelivery();setInterval(refreshDelivery,15000);
 });
 </script>"""
-
