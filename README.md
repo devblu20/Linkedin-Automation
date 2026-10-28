@@ -162,6 +162,12 @@ command fails closed when the returned account does not match.
 
 ## BluQQ qualification and outreach review
 
+The dashboard sidebar opens separate Lead pipeline, Campaigns, Outreach and Reports views.
+Campaigns can be created, edited, and selected for a search. Outreach provides searchable
+saved leads, qualification review and editable drafts; copying requires an approved review
+status and does not send anything. Reports has independent run/status/decision filters and
+CSV/Excel downloads. Hash links preserve the selected view on refresh and browser navigation.
+
 The review queue is aligned to BluQQ's service offer: owned trading automation and AI-enhanced
 investment infrastructure, especially US options, multi-account execution, risk controls,
 backtesting, reporting, private AI, and managed support. BluQQ is represented as software-only:

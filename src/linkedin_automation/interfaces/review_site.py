@@ -155,7 +155,9 @@ def create_review_app(
             )
             html = html.replace("Changes are saved to Neon", "Changes are saved locally")
             html = html.replace("Client updated in Neon", "Client updated locally")
-        return html
+        from linkedin_automation.interfaces.workspace_navigation import install_workspace_navigation
+
+        return install_workspace_navigation(html)
 
     @app.get("/api/leads")
     def list_leads() -> list[dict[str, object]]:
