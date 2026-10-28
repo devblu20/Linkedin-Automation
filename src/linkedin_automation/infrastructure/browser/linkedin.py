@@ -324,6 +324,7 @@ def _profile_section(
 _PROFILE_BOUNDARIES = (
     "about",
     "featured",
+    "services",
     "experience",
     "education",
     "skills",
@@ -379,6 +380,50 @@ def _explicit_role_company(headline: str) -> tuple[str, str]:
     return "", ""
 
 
+def current_experience_roles(experience: tuple[str, ...]) -> list[tuple[str, str, bool]]:
+    """Read explicitly current roles; past employment is never treated as current."""
+    roles = []
+    for index, line in enumerate(experience):
+        if not re.search(
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}.*\bPresent\b",
+            line,
+            re.I,
+        ):
+            continue
+        if index < 2:
+            continue
+        company = experience[index - 1].split(" · ", 1)[0].strip()
+        title = experience[index - 2].strip()
+        affiliation = experience[index - 1]
+        employment = (
+            r"\b(?:Full-time|Part-time|Freelance|Self-employed|Contract|Internship|"
+            r"Apprenticeship|Temporary|Seasonal)\b"
+        )
+        if not re.search(employment, affiliation, re.I):
+            continue
+        if company.casefold() in {
+            "full-time",
+            "part-time",
+            "contract",
+            "internship",
+            "apprenticeship",
+            "temporary",
+            "seasonal",
+        }:
+            continue
+        if not title or not company or len(title) > 255 or len(company) > 255:
+            continue
+        if re.search(r"\b(?:\d{4}|skills?|Present)\b", title, re.I):
+            continue
+        self_employed = bool(
+            re.search(
+                r"\b(?:Freelance|Self[- ]employed|Sole trader)\b", experience[index - 1], re.I
+            )
+        )
+        roles.append((title, company, self_employed))
+    return roles
+
+
 def enrich_visible_profile_text(snapshot: str, candidate: LeadCandidate) -> LeadCandidate:
     """Parse only the subject's visible sections, excluding activity and suggestions."""
     about = " ".join(_profile_section(snapshot, "About", _PROFILE_BOUNDARIES))[:16_000]
@@ -387,6 +432,9 @@ def enrich_visible_profile_text(snapshot: str, candidate: LeadCandidate) -> Lead
     skills = _profile_section(snapshot, "Skills", _PROFILE_BOUNDARIES)
     header = _profile_header_text(snapshot)
     role, company = _explicit_role_company(candidate.headline)
+    current_roles = current_experience_roles(experience)
+    if current_roles:
+        role, company, _ = current_roles[0]
     connection_match = re.search(r"\b([\d,.+KkMm]+)\s+connections?\b", header, re.I)
     follower_match = re.search(r"\b([\d,.+KkMm]+)\s+followers?\b", header, re.I)
     size_min, size_max = _visible_company_size(header)
@@ -402,7 +450,9 @@ def enrich_visible_profile_text(snapshot: str, candidate: LeadCandidate) -> Lead
         followers=follower_match.group(1) if follower_match else "",
         company_size_min=size_min or candidate.company_size_min,
         company_size_max=size_max or candidate.company_size_max,
-        self_employed=_visible_self_employed(candidate.headline) or candidate.self_employed,
+        self_employed=any(item[2] for item in current_roles)
+        or _visible_self_employed(candidate.headline)
+        or candidate.self_employed,
         profile_snapshot=snapshot,
     )
 
@@ -450,7 +500,7 @@ def refresh_profile_header(snapshot: str, candidate: LeadCandidate) -> LeadCandi
 
 
 def extract_visible_profile(page: Page, candidate: LeadCandidate) -> LeadCandidate:
-    """Wait briefly for lazy profile content and perform two normal bounded scrolls."""
+    """Read normal lazy-loaded profile sections with bounded, correctly targeted scrolling."""
     main = page.locator("main").first
     main.wait_for(state="visible", timeout=15_000)
     snapshot = main.inner_text(timeout=15_000)[:50_000]
@@ -462,10 +512,23 @@ def extract_visible_profile(page: Page, candidate: LeadCandidate) -> LeadCandida
             break
         page.wait_for_timeout(400)
         snapshot = main.inner_text(timeout=15_000)[:50_000]
-    for _ in range(2):
-        page.mouse.wheel(0, 650)
+    # The initial mouse position can be over the fixed sidebar, where wheel
+    # events do not scroll LinkedIn's profile pane at all.
+    box = main.bounding_box()
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    if box:
+        page.mouse.move(
+            min(box["x"] + min(300, box["width"] / 2), viewport["width"] - 30),
+            viewport["height"] / 2,
+        )
+    for _ in range(8):
+        page.mouse.wheel(0, 850)
         page.wait_for_timeout(600)
         snapshot = main.inner_text(timeout=15_000)[:50_000]
+        if _profile_section(snapshot, "Experience", _PROFILE_BOUNDARIES) and _profile_section(
+            snapshot, "Education", _PROFILE_BOUNDARIES
+        ):
+            break
     PlaywrightLinkedInCollector._raise_for_safety_state(*read_page_snapshot(page))
     current = refresh_profile_header(snapshot, candidate)
     if current is None:

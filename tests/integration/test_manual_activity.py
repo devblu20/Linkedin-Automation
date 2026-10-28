@@ -35,18 +35,18 @@ def test_manual_tracking_requires_approval_and_preserves_timeline(hosted_review)
     request = activity("approved", "connection_sent")
     assert client.post(url, json=request).status_code == 200
     assert client.post(url, json=request).status_code == 200
-    assert len(client.get(url).json()) == 1
+    assert len(client.get(url).json()) == 2
     changed = {**request, "note": "Different activity note"}
     assert client.post(url, json=changed).status_code == 409
     assert client.post(url, json=activity("connection_sent", "message_sent")).status_code == 409
     assert client.post(url, json=activity("connection_sent", "connected")).status_code == 200
     assert client.post(url, json=activity("connected", "message_sent")).status_code == 200
     history = client.get(url).json()
-    assert len(history) == 3
+    assert len(history) == 4
     assert all(x["recorded_manually"] for x in history)
     exported = client.get(url + "/export.csv")
     assert exported.status_code == 200
-    assert exported.headers["X-Export-Row-Count"] == "3"
+    assert exported.headers["X-Export-Row-Count"] == "4"
     assert "Personally checked" in exported.text
     assert history[0]["draft_snapshot"] == record.follow_up_message
     summary = client.get("/api/summary").json()
@@ -56,7 +56,12 @@ def test_manual_tracking_requires_approval_and_preserves_timeline(hosted_review)
     update["status"] = "message_sent"
     update["connection_message"] = "Updated draft after recording"
     assert client.put(f"/api/leads/{lead.id}", json=update).status_code == 200
-    assert client.get(url).json()[-1]["draft_snapshot"] == record.connection_message
+    assert (
+        next(x for x in client.get(url).json() if x["action"] == "connection_sent")[
+            "draft_snapshot"
+        ]
+        == record.connection_message
+    )
     update["status"] = "approved"
     assert client.put(f"/api/leads/{lead.id}", json=update).status_code == 409
 

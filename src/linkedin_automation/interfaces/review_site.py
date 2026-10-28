@@ -58,7 +58,9 @@ def create_review_app(
     """Create a local review application for all leads or one research run."""
     repository = DatabaseResearchRepository(database_url)
     repository.initialize()
-    review = OutreachReview(repository)
+    review = OutreachReview(
+        repository, save_review=lambda record: repository.upsert_outreach(record, manual=True)
+    )
     settings = RuntimeSettings.from_environment()
     reporter = ExcelReportWriter(settings.artifact_dir)
     outbound = OutboundOutreach(repository, PlaywrightLinkedInOutreach(settings.browser_data_dir))
@@ -96,7 +98,9 @@ def create_review_app(
     from linkedin_automation.interfaces.manual_activity import install_manual_activity
 
     # The scope checker is resolved when the endpoint is called, after setup finishes.
-    install_manual_activity(app, repository, review, lambda identifier: ensure_review_scope(identifier))
+    install_manual_activity(
+        app, repository, review, lambda identifier: ensure_review_scope(identifier)
+    )
     if local_collection:
         from linkedin_automation.interfaces.local_collection import install_local_collection
 
@@ -162,7 +166,9 @@ def create_review_app(
         from linkedin_automation.interfaces.manual_activity import MANUAL_ACTIVITY_SCRIPT
         from linkedin_automation.interfaces.workspace_navigation import install_workspace_navigation
 
-        return install_workspace_navigation(html).replace("</body>", MANUAL_ACTIVITY_SCRIPT + "</body>")
+        return install_workspace_navigation(html).replace(
+            "</body>", MANUAL_ACTIVITY_SCRIPT + "</body>"
+        )
 
     @app.get("/api/leads")
     def list_leads() -> list[dict[str, object]]:
@@ -186,14 +192,8 @@ def create_review_app(
                 for s in statuses
             ),
             "connection_sent": sum(
-                s
-                in {
-                    OutreachStatus.CONNECTION_SENT,
-                    OutreachStatus.CONNECTED,
-                    OutreachStatus.MESSAGE_READY,
-                    OutreachStatus.MESSAGE_SENT,
-                }
-                for s in statuses
+                x.status in {"sent", "accepted"}
+                for x in repository.list_connection_requests(run_id)
             ),
             "connected": sum(
                 s
@@ -204,7 +204,7 @@ def create_review_app(
                 }
                 for s in statuses
             ),
-            "message_sent": statuses.count(OutreachStatus.MESSAGE_SENT),
+            "message_sent": sum(x.status == "sent" for x in repository.list_sent_messages(run_id)),
             "connection_requests": [asdict(x) for x in repository.list_connection_requests(run_id)],
             "messages": [asdict(x) for x in repository.list_sent_messages(run_id)],
         }
@@ -260,17 +260,38 @@ def create_review_app(
     @app.put("/api/leads/{lead_id}")
     def update_lead(lead_id: UUID, payload: ReviewUpdate) -> dict[str, object]:
         ensure_review_scope(lead_id)
+        queue = getattr(app.state, "delivery_queue", None)
+        if queue and queue.active_for(lead_id):
+            raise HTTPException(
+                409,
+                "Cancel the unstarted delivery or wait for it to finish before editing this review.",
+            )
         current = repository.get_outreach(lead_id)
-        tracking = {OutreachStatus.CONNECTION_SENT, OutreachStatus.CONNECTED,
-                    OutreachStatus.MESSAGE_READY, OutreachStatus.MESSAGE_SENT}
-        if review_only and current and current.status in tracking and payload.status != current.status:
+        tracking = {
+            OutreachStatus.CONNECTION_QUEUED,
+            OutreachStatus.CONNECTION_SENT,
+            OutreachStatus.CONNECTED,
+            OutreachStatus.MESSAGE_READY,
+            OutreachStatus.MESSAGE_SENT,
+        }
+        if (
+            review_only
+            and current
+            and current.status in tracking
+            and payload.status != current.status
+        ):
             raise HTTPException(409, "Use manual activity tracking to advance this lead")
-        if review_only and payload.status not in {
-            OutreachStatus.NEEDS_VERIFICATION,
-            OutreachStatus.READY_FOR_REVIEW,
-            OutreachStatus.APPROVED,
-            OutreachStatus.REJECTED,
-        } and not (current and current.status in tracking and payload.status == current.status):
+        if (
+            review_only
+            and payload.status
+            not in {
+                OutreachStatus.NEEDS_VERIFICATION,
+                OutreachStatus.READY_FOR_REVIEW,
+                OutreachStatus.APPROVED,
+                OutreachStatus.REJECTED,
+            }
+            and not (current and current.status in tracking and payload.status == current.status)
+        ):
             raise HTTPException(
                 422,
                 "Choose a review status; sending and connection states require actual outreach actions",

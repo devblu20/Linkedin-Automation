@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, replace
 from uuid import uuid5
 
+from linkedin_automation.application.automatic_review import automatic_profile_review
 from linkedin_automation.application.run_transfer import ProfileTransfer, RunTransfer
 from linkedin_automation.domain.enums import OutreachStatus, RunStatus
 from linkedin_automation.domain.models import (
@@ -26,6 +27,8 @@ from linkedin_automation.domain.services import (
 
 def prepare_research_transfer(
     payload: RunTransfer,
+    *,
+    automatic: bool = False,
 ) -> tuple[ResearchRun, list[tuple[Lead, OutreachRecord]], list[Observation]]:
     if payload.definition.version != 2:
         raise ValueError("Cloud research requires a version 2 campaign")
@@ -57,6 +60,8 @@ def prepare_research_transfer(
             record = replace(
                 create_outreach_record(lead, definition), status=OutreachStatus.NEEDS_VERIFICATION
             )
+            if automatic:
+                record = automatic_profile_review(lead, definition)
             rows.append((lead, record))
     serialized = json.dumps(
         definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":")

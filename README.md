@@ -185,9 +185,39 @@ connection request manually. Record `connection_sent`; after LinkedIn shows acce
 `connected`. Only then does the site expose the post-connection draft. Record `message_sent`
 after manually sending it.
 
-Direct site-to-LinkedIn sending is intentionally unavailable without an approved LinkedIn
-Invitations/Messages API adapter. LinkedIn passwords, cookies, and browser actions are never used
-for outreach sending.
+The local review site supports manual tracking. The hosted dashboard additionally supports the
+authorized browser delivery worker described below. Legacy direct-send routes remain disabled.
+
+### Hosted automatic qualification and authorized delivery
+
+Set `AUTOMATIC_QUALIFICATION=1` and `AUTOMATIC_QUEUE=1` on the hosted service to evaluate
+newly collected profiles against their saved campaign rules and prepare eligible outreach.
+Current role, company and location must be available, and the current target identity and
+qualification threshold must pass. Missing facts remain Needs verification. Campaigns requiring
+funds evidence retain human verification; institutional AUM is never treated as personal funds.
+Fresh observations may enrich an older untouched lead, but cannot overwrite a human review or
+the original research observations.
+
+In **Outreach → Automatic outreach queue**, inspect the named recipient and exact draft, then
+explicitly authorize delivery. Follow-up consent is separate and applies only to the displayed
+draft after the connection is confirmed. Changed drafts require new authorization. Preparing
+a queue or approving a lead does not send a request. Jobs deduplicate profile URLs across runs
+and respect the saved daily limits.
+
+The local browser worker must be online with `LINKEDIN_AUTOMATION_ENABLE_OUTREACH_WORKER=1`
+(set by `scripts/start-browser-worker.ps1`). It uses the manually authenticated local Chrome
+profile. Railway hosts the dashboard and durable queue; it does not host this visible browser.
+Actual delivery is recorded only after the worker observes Pending, a first-degree connection,
+or the sent message in the matching conversation. Acceptance checks run every six hours for
+up to fourteen days, with a read-only **Check now** control. Ambiguous results pause delivery
+as Uncertain; they are never automatically resent. Check LinkedIn before resolving such a job.
+
+Delivery handoffs are retained privately under `artifacts/worker-delivery/`. A lost dashboard
+response retries the saved result, rather than repeating the browser action. Preserve these
+files during recovery. The delivery queue is stored in the existing `search-jobs.sqlite3`.
+Browser layouts and account permissions can affect delivery; login/security checks still need
+the account owner. Offline browser tests verify the adapter, but a live send requires a separate
+recipient/draft authorization and subsequent observation of the real LinkedIn outcome.
 
 ## Database migrations
 

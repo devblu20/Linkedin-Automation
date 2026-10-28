@@ -89,6 +89,9 @@ def test_profile_loading_wait_is_bounded_and_reads_late_visible_sections():
         def wait_for(self, **kwargs):
             pass
 
+        def bounding_box(self):
+            return {"x": 260, "y": 0, "width": 800, "height": 600}
+
         def inner_text(self, **kwargs):
             return (
                 "Example Person\nCEO & co-founder of Suade\nLondon\nAbout\nAccessibility"
@@ -101,6 +104,10 @@ def test_profile_loading_wait_is_bounded_and_reads_late_visible_sections():
         url = "https://www.linkedin.com/in/example/"
         waits = 0
         scrolls = 0
+
+        def __init__(self):
+            self.viewport_size = {"width": 1280, "height": 720}
+            self.positions = []
 
         @property
         def mouse(self):
@@ -115,6 +122,9 @@ def test_profile_loading_wait_is_bounded_and_reads_late_visible_sections():
         def wheel(self, x, y):
             self.scrolls += 1
 
+        def move(self, x, y):
+            self.positions.append((x, y))
+
         def is_closed(self):
             return False
 
@@ -127,5 +137,6 @@ def test_profile_loading_wait_is_bounded_and_reads_late_visible_sections():
     page = Page()
     result = extract_visible_profile(page, subject())
     assert result.about == "Visible subject description"
-    assert page.waits == 4
-    assert page.scrolls == 2
+    assert page.waits <= 14
+    assert page.scrolls == 8
+    assert page.positions == [(560, 360)]

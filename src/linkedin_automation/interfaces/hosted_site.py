@@ -53,6 +53,10 @@ def create_hosted_app() -> FastAPI:
     from linkedin_automation.interfaces.search_jobs import install_hosted_search
 
     install_hosted_search(app, root, Path("config"))
+    from linkedin_automation.interfaces.outreach_delivery import install_delivery
+
+    delivery_repository = DatabaseResearchRepository(database)
+    delivery = install_delivery(app, root, delivery_repository)
 
     @app.post("/api/import/runs")
     @app.post("/api/import/research")
@@ -66,7 +70,9 @@ def create_hosted_app() -> FastAPI:
             payload = RunTransfer.model_validate_json(bytes(body))
             research = request.url.path == "/api/import/research"
             if research:
-                run, rows, observations = prepare_research_transfer(payload)
+                run, rows, observations = prepare_research_transfer(
+                    payload, automatic=os.getenv("AUTOMATIC_QUALIFICATION", "0") == "1"
+                )
             else:
                 run, rows = prepare_transfer(payload)
                 observations = None
@@ -81,6 +87,10 @@ def create_hosted_app() -> FastAPI:
                 inserted, skipped = repository.import_review_run(
                     run, rows, observations=observations
                 )
+                if research and os.getenv("AUTOMATIC_QUALIFICATION", "0") == "1":
+                    repository.enrich_unreviewed_profiles(rows)
+                if os.getenv("AUTOMATIC_QUEUE", "0") == "1":
+                    delivery.prepare()
             finally:
                 repository.close()
             result = {"run_id": str(run.id), "inserted": inserted, "skipped": skipped}
@@ -163,7 +173,20 @@ def create_hosted_app() -> FastAPI:
 
             body = body.replace("<main>", "<main>" + SEARCH_PANEL, 1)
             body = body.replace("</body>", SEARCH_SCRIPT + "</body>")
+            from linkedin_automation.interfaces.delivery_ui import DELIVERY_SCRIPT
+
+            body = body.replace("</body>", DELIVERY_SCRIPT + "</body>")
             body = body.replace("Neon connected", "Hosted dashboard")
+            body = body.replace(
+                "LinkedIn sending remains manual.",
+                "Automatic qualification. Review and enable queued drafts for delivery.",
+            )
+            body = body.replace(
+                "Review evidence, edit message drafts and copy approved drafts for manual sending. "
+                "Approval does not send a message.",
+                "Review profile qualification and drafts. Eligible profiles can be auto-approved "
+                "and queued; enable the named delivery below to start sending.",
+            )
             body = body.replace("London client pipeline", "LinkedIn research pipeline")
             body = body.replace("All Neon campaigns", "Hosted review · separate database")
             body = body.replace("Loading Neon leads", "Loading leads")

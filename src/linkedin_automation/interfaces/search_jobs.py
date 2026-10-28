@@ -189,6 +189,13 @@ class SearchJobs:
             self.expire(db)
             if db.execute("SELECT 1 FROM search_jobs WHERE status='running'").fetchone():
                 return None
+            if (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_jobs'"
+                ).fetchone()
+                and db.execute("SELECT 1 FROM delivery_jobs WHERE status='running'").fetchone()
+            ):
+                return None
             row = db.execute(
                 "SELECT * FROM search_jobs WHERE status='queued' ORDER BY created LIMIT 1"
             ).fetchone()

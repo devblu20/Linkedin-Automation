@@ -218,6 +218,17 @@ def create_outreach_record(lead: Lead, definition: SearchDefinition) -> Outreach
     firm_type = next(
         (value for value in qualification.firm_types if value.casefold() in searchable), ""
     )
+    if (
+        not firm_type
+        and "independent trader" in {x.casefold() for x in qualification.firm_types}
+        and re.search(
+            r"\bindependent(?:\s+(?:quant|stock|crypto|options|futures|forex|financial)){0,2}\s+trader\b",
+            searchable,
+        )
+    ):
+        firm_type = next(
+            x for x in qualification.firm_types if x.casefold() == "independent trader"
+        )
     assessment = qualification_assessment(
         lead, definition, firm_type=firm_type, funds_gbp=None, fund_evidence_url=""
     )

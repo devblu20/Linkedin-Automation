@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID
 
+from linkedin_automation.application.automatic_review import automatic_review_blockers
 from linkedin_automation.application.exceptions import RunNotFoundError
 from linkedin_automation.application.ports.repository import ResearchRepository
 from linkedin_automation.domain.enums import OutreachStatus
@@ -24,8 +26,13 @@ class OutreachItem:
 class OutreachReview:
     """List and update review records without performing LinkedIn actions."""
 
-    def __init__(self, repository: ResearchRepository) -> None:
+    def __init__(
+        self,
+        repository: ResearchRepository,
+        save_review: Callable[[OutreachRecord], None] | None = None,
+    ) -> None:
         self._repository = repository
+        self._save_review = save_review or repository.upsert_outreach
 
     def list(self, run_id: UUID | None = None) -> list[OutreachItem]:
         leads = {lead.id: lead for lead in self._repository.list_leads(run_id)}
@@ -91,6 +98,7 @@ class OutreachReview:
                 if not value
             ],
             "can_approve": not result["blockers"],
+            "automatic_review_blockers": automatic_review_blockers(lead, definition),
         }
 
     def update(
@@ -125,5 +133,5 @@ class OutreachReview:
             follow_up_message=follow_up_message,
             requested_status=status,
         )
-        self._repository.upsert_outreach(updated)
+        self._save_review(updated)
         return updated

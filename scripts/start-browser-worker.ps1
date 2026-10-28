@@ -41,6 +41,7 @@ $taskEnv = @{
     LINKEDIN_AUTOMATION_BROWSER_DATA = (Join-Path $taskRoot 'browser-data-chrome')
     LINKEDIN_AUTOMATION_BROWSER_CHANNEL = 'chrome'
     LINKEDIN_AUTOMATION_DATABASE_URL = 'sqlite:///data/local-research.sqlite3'
+    LINKEDIN_AUTOMATION_ENABLE_OUTREACH_WORKER = '1'
 }
 $taskPrevious = @{}
 try {

@@ -463,7 +463,7 @@ class DatabaseResearchRepository:
                         firm_type=record.firm_type,
                         funds_gbp=None,
                         fund_evidence_url="",
-                        fund_evidence_notes="",
+                        fund_evidence_notes=record.fund_evidence_notes,
                         score=record.score,
                         status=record.status.value,
                         connection_message=record.connection_message,
@@ -538,6 +538,80 @@ class DatabaseResearchRepository:
                 )
             return result
 
+    def enrich_unreviewed_profiles(self, fresh_rows) -> int:
+        """Refresh unreviewed facts from a newer read, preserving original observations."""
+        from dataclasses import fields, replace
+
+        from linkedin_automation.application.automatic_review import automatic_profile_review
+        from linkedin_automation.domain.services import evaluate_candidate, process_candidate
+
+        changed = 0
+        with Session(self._engine) as session:
+            for fresh, _ in fresh_rows:
+                profiles = session.scalars(
+                    select(LeadRow).where(
+                        LeadRow.profile_url == fresh.profile_url, LeadRow.id != str(fresh.id)
+                    )
+                ).all()
+                for profile in profiles:
+                    record = session.get(OutreachRow, profile.id)
+                    if (
+                        not record
+                        or record.status != "needs_verification"
+                        or record.fund_evidence_notes
+                    ):
+                        continue
+                    if session.scalar(
+                        select(ManualActivityRow.id)
+                        .where(ManualActivityRow.lead_id == profile.id)
+                        .limit(1)
+                    ):
+                        continue
+                    if fresh.last_observed_at < _aware(profile.last_observed_at):
+                        continue
+                    definition = SearchDefinition.model_validate_json(
+                        session.get(RunRow, profile.run_id).definition_json
+                    )
+                    raw = {
+                        field.name: getattr(fresh, field.name)
+                        for field in fields(LeadCandidate)
+                        if field.name != "collected_at"
+                    }
+                    candidate = LeadCandidate(**raw, collected_at=fresh.last_observed_at)
+                    updated = replace(
+                        fresh,
+                        id=UUID(profile.id),
+                        run_id=UUID(profile.run_id),
+                        first_observed_at=_aware(profile.first_observed_at),
+                        evidence=evaluate_candidate(candidate, definition),
+                        notes=(
+                            profile.notes
+                            + "\nAutomatically refreshed from profile "
+                            + fresh.profile_url
+                            + " in research run "
+                            + str(fresh.run_id)
+                        ).strip(),
+                    )
+                    self._copy_lead(profile, updated)
+                    decision = automatic_profile_review(updated, definition)
+                    if process_candidate(candidate, definition, updated.run_id) is None:
+                        decision = replace(
+                            decision,
+                            status=OutreachStatus.REJECTED,
+                            fund_evidence_notes=(
+                                "Automatically rejected: refreshed profile "
+                                "no longer matches this campaign"
+                            ),
+                        )
+                    record.score = decision.score
+                    record.status = decision.status.value
+                    record.firm_type = decision.firm_type
+                    record.fund_evidence_notes = decision.fund_evidence_notes
+                    record.updated_at = datetime.now(UTC)
+                    changed += 1
+            session.commit()
+        return changed
+
     def observation_counts(self, run_id: UUID | None = None) -> dict[str, int]:
         with Session(self._engine) as session:
             statement = select(ObservationRow.accepted, func.count()).group_by(
@@ -572,9 +646,10 @@ class DatabaseResearchRepository:
             row = session.get(LeadRow, str(lead_id))
             return _lead_from_row(row) if row is not None else None
 
-    def upsert_outreach(self, record: OutreachRecord) -> None:
+    def upsert_outreach(self, record: OutreachRecord, *, manual: bool = False) -> None:
         with Session(self._engine) as session:
             row = session.get(OutreachRow, str(record.lead_id))
+            previous_status = row.status if row else "needs_verification"
             if row is None:
                 row = OutreachRow(lead_id=str(record.lead_id), run_id=str(record.run_id))
                 session.add(row)
@@ -587,6 +662,23 @@ class DatabaseResearchRepository:
             row.connection_message = record.connection_message
             row.follow_up_message = record.follow_up_message
             row.updated_at = record.updated_at
+            if manual:
+                snapshot = json.dumps(asdict(record), default=str, sort_keys=True)
+                session.add(
+                    ManualActivityRow(
+                        id=str(uuid4()),
+                        lead_id=str(record.lead_id),
+                        run_id=str(record.run_id),
+                        action="review_saved",
+                        from_status=previous_status,
+                        to_status=record.status.value,
+                        note="Review and draft fields saved by user",
+                        source_url=record.fund_evidence_url,
+                        draft_snapshot=snapshot,
+                        payload_hash=sha256(snapshot.encode()).hexdigest(),
+                        created_at=record.updated_at,
+                    )
+                )
             session.commit()
 
     def get_outreach(self, lead_id: UUID) -> OutreachRecord | None:
@@ -717,7 +809,7 @@ class DatabaseResearchRepository:
                     select(ConnectionRequestRow)
                     .where(
                         ConnectionRequestRow.lead_id == str(lead_id),
-                        ConnectionRequestRow.status == "sent",
+                        ConnectionRequestRow.status.in_(["sent", "accepted"]),
                     )
                     .order_by(ConnectionRequestRow.requested_at.desc())
                     .limit(1)
@@ -824,7 +916,7 @@ class DatabaseResearchRepository:
                     .select_from(ConnectionRequestRow)
                     .where(
                         ConnectionRequestRow.requested_at >= since,
-                        ConnectionRequestRow.status == "sent",
+                        ConnectionRequestRow.status.in_(["sent", "accepted"]),
                     )
                 )
                 or 0

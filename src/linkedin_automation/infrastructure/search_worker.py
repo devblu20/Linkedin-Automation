@@ -64,7 +64,7 @@ class DashboardClient:
         self.url, self.username, self.password = url.rstrip("/"), username, password
 
     def request(self, path: str, payload: dict | None = None) -> dict:
-        if not path.startswith("/api/search/"):
+        if not path.startswith(("/api/search/", "/api/outreach/")):
             raise ValueError("Invalid worker endpoint")
         authorization = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
         request = Request(
@@ -293,6 +293,12 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                 pending.save(job, result)
                 pending.deliver(client)
                 print(f"Search job {job['id']}: {result['status']}", flush=True)
+            elif os.getenv("LINKEDIN_AUTOMATION_ENABLE_OUTREACH_WORKER")=="1":
+                from linkedin_automation.infrastructure.delivery_worker import (
+                    run_authorized_delivery,
+                )
+
+                run_authorized_delivery(client)
             if once:
                 return
         except (ValueError, KeyError, TimeoutError, OSError):

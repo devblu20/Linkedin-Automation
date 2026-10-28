@@ -3,6 +3,7 @@ from pathlib import Path
 from linkedin_automation.application.search_plan import build_people_search_steps
 from linkedin_automation.domain.models import LeadCandidate
 from linkedin_automation.infrastructure.browser.linkedin import (
+    current_experience_roles,
     enrich_visible_profile_text,
     refresh_profile_header,
 )
@@ -83,3 +84,23 @@ def test_current_profile_header_replaces_old_role_location_and_inferences():
 def test_header_of_other_person_or_partial_header_is_not_used():
     assert refresh_profile_header("Other Person\nFounder\nLondon", stale_candidate()) is None
     assert refresh_profile_header("Example Person\nFounder\nConnect", stale_candidate()) is None
+
+
+def test_current_experience_supplies_employer_and_concurrent_self_employment():
+    text = (
+        "Example Person\nFinancial software professional\nLondon\nAbout\nSubject bio\n"
+        "Services\nFinancial Consulting\nExperience\nProgramme Manager Front Office\n"
+        "Example Investment Management · Full-time\nAug 2024 - Present · 2 yrs\n"
+        "Quant Algorithmic Trading and Alpha Research\nFreelance · Freelance\n"
+        "Mar 2020 - Present · 6 yrs\nSenior Project Manager\nPrevious Company · Full-time\n"
+        "Feb 2024 - Mar 2024 · 2 mos\nEducation\nExample College\nSkills\nPython"
+    )
+    candidate = stale_candidate()
+    fresh = refresh_profile_header(text, candidate)
+    result = enrich_visible_profile_text(text, fresh)
+    assert result.company == "Example Investment Management"
+    assert result.current_title == "Programme Manager Front Office"
+    assert result.self_employed is True
+    assert result.about == "Subject bio"
+    assert len(current_experience_roles(result.experience)) == 2
+    assert result.education == ("Example College",)
