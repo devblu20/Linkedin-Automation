@@ -24,11 +24,13 @@ if (-not $PythonPath) {
 if (-not $PythonPath -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
     throw 'Pass -PythonPath with the Python executable where this project is installed.'
 }
-$taskExisting = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-    Where-Object { $_.CommandLine -match '-m linkedin_automation worker' -and
-        $_.CommandLine.Contains($DashboardUrl.TrimEnd('/')) }
+$taskLauncher = Join-Path $taskRoot 'scripts\worker-launcher.pyw'
+$taskPythonW = Join-Path (Split-Path -Parent $PythonPath) 'pythonw.exe'
+if (Test-Path -LiteralPath $taskPythonW -PathType Leaf) { $PythonPath = $taskPythonW }
+$taskExisting = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($taskLauncher) }
 if ($taskExisting) {
-    Write-Output 'The browser worker for this dashboard is already running.'
+    Write-Output 'The LinkedIn worker helper is already running; it will keep the worker available.'
     return
 }
 $taskLogs = Join-Path $taskRoot 'data\worker-logs'
@@ -37,11 +39,8 @@ $taskStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $taskOutput = Join-Path $taskLogs "$taskStamp.out.log"
 $taskError = Join-Path $taskLogs "$taskStamp.err.log"
 $taskEnv = @{
-    PYTHONPATH = (Join-Path $taskRoot 'src')
-    LINKEDIN_AUTOMATION_BROWSER_DATA = (Join-Path $taskRoot 'browser-data-chrome')
-    LINKEDIN_AUTOMATION_BROWSER_CHANNEL = 'chrome'
-    LINKEDIN_AUTOMATION_DATABASE_URL = 'sqlite:///data/local-research.sqlite3'
-    LINKEDIN_AUTOMATION_ENABLE_OUTREACH_WORKER = '1'
+    LINKEDIN_AUTOMATION_DASHBOARD_URL = $DashboardUrl.TrimEnd('/')
+    LINKEDIN_AUTOMATION_DASHBOARD_CREDENTIALS_FILE = $taskCredentials
 }
 $taskPrevious = @{}
 try {
@@ -49,11 +48,11 @@ try {
         $taskPrevious[$taskKey] = [Environment]::GetEnvironmentVariable($taskKey, 'Process')
         [Environment]::SetEnvironmentVariable($taskKey, $taskEnv[$taskKey], 'Process')
     }
-    $taskArguments = '-m linkedin_automation worker --url {0} --credentials-file "{1}"' -f $DashboardUrl, $taskCredentials
+    $taskArguments = '"{0}"' -f $taskLauncher
     $taskProcess = Start-Process -FilePath $PythonPath -ArgumentList $taskArguments `
         -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $taskOutput -RedirectStandardError $taskError
-    Write-Output "LinkedIn browser worker started (PID $($taskProcess.Id))."
+    Write-Output "LinkedIn worker helper started (PID $($taskProcess.Id))."
     Write-Output "Local worker log: $taskOutput"
     Write-Output 'Keep this computer awake and connected. LinkedIn verification still requires you.'
 } finally {

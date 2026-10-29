@@ -66,6 +66,11 @@ class DashboardClient:
     def request(self, path: str, payload: dict | None = None) -> dict:
         if not path.startswith(("/api/search/", "/api/outreach/")):
             raise ValueError("Invalid worker endpoint")
+        if payload is None and path in {"/api/search/claim", "/api/search/heartbeat"}:
+            payload = {
+                "managed": os.getenv("LINKEDIN_AUTOMATION_WORKER_MANAGED") == "1",
+                "autostart": os.getenv("LINKEDIN_AUTOMATION_WORKER_AUTOSTART") == "1",
+            }
         authorization = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
         request = Request(
             self.url + path,
@@ -215,7 +220,7 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
 
 
 def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False) -> None:
-    print("Browser worker ready. Only search and review sync are enabled.", flush=True)
+    print("Browser worker ready. Searches and explicitly authorized delivery only.", flush=True)
     pending = PendingCompletion(client)
     while True:
         try:
@@ -293,7 +298,7 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                 pending.save(job, result)
                 pending.deliver(client)
                 print(f"Search job {job['id']}: {result['status']}", flush=True)
-            elif os.getenv("LINKEDIN_AUTOMATION_ENABLE_OUTREACH_WORKER")=="1":
+            elif os.getenv("LINKEDIN_AUTOMATION_ENABLE_OUTREACH_WORKER") == "1":
                 from linkedin_automation.infrastructure.delivery_worker import (
                     run_authorized_delivery,
                 )

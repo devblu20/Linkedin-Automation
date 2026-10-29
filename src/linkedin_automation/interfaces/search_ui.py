@@ -3,6 +3,7 @@
 # ruff: noqa: E501 - embedded dashboard asset.
 
 from linkedin_automation.interfaces.campaign_editor import CAMPAIGN_DIALOG, CAMPAIGN_SCRIPT
+from linkedin_automation.interfaces.worker_controls import WORKER_PANEL, WORKER_SCRIPT
 
 SEARCH_PANEL = """<section class="panel" id="automaticSearch">
 <div class="toolbar" style="flex-wrap:wrap"><div class="search"><strong>Campaign requirements</strong><div class="sub">Choose an existing campaign or create your own.</div></div><button class="btn" id="newCampaign" type="button">New campaign</button><button class="btn" id="editCampaign" type="button">Edit selected campaign</button></div>
@@ -47,4 +48,11 @@ refreshSearch();setInterval(refreshSearch,5000);
 </script>"""
 
 SEARCH_PANEL += CAMPAIGN_DIALOG
-SEARCH_SCRIPT += CAMPAIGN_SCRIPT
+SEARCH_PANEL = SEARCH_PANEL.replace('<p id="searchDraft"', WORKER_PANEL + '<p id="searchDraft"', 1)
+SEARCH_SCRIPT = SEARCH_SCRIPT.replace(
+    "const state=await r.json();const selected",
+    "const state=await r.json();if(window.renderWorkerManagement)"
+    "window.renderWorkerManagement(state);const selected",
+    1,
+)
+SEARCH_SCRIPT += CAMPAIGN_SCRIPT + WORKER_SCRIPT

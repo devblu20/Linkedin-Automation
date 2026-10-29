@@ -263,6 +263,25 @@ client objects.
 
 ### Browser worker recovery
 
+On the configured Windows computer, run `scripts/install-worker-autostart.ps1` once.
+This installs a current-user Startup shortcut and the `bluqq-linkedin-worker://start` handler,
+both pointing only to this project's fixed Python helper. It does not store credentials in
+the shortcut/URL, register an HTTP command endpoint, or change Windows execution policy.
+The helper starts after Windows sign-in, uses an OS-owned single-instance lock, leaves an
+existing worker alone, and restarts an exited worker after fifteen seconds. Recovery still
+uses the existing durable research/delivery handoffs; uncertain sends are never repeated.
+
+The dashboard provides **Start worker on this computer**, **Refresh worker status**, and
+**Worker setup / always-on**. Windows may ask to open the installed helper. This operates
+only on the computer where setup was performed; a web button cannot wake a shut-down/sleeping
+computer. Keep the computer awake and connected. No search or delivery is created by starting
+the helper. Credentials and LinkedIn verification retain their existing requirements.
+
+Use `scripts/install-worker-autostart.ps1 -DisableAutoStart` to remove only this project's
+sign-in shortcut. The manual Start worker link remains available and current work continues.
+The helper's logs are under `data/worker-logs/`, including `supervisor.log`. Do not move/delete
+the checkout or Python environment while the sign-in shortcut is installed.
+
 The worker saves finished research and its dashboard completion in an atomic local handoff
 under `artifacts/worker-pending/` before attempting network upload. After a connection failure
 or worker restart it retries this handoff before claiming another search. Uploads are keyed by

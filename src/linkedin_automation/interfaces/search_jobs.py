@@ -25,6 +25,12 @@ class SearchRequest(BaseModel):
     max_pages: int = Field(default=3, ge=1, le=5)
 
 
+class WorkerHeartbeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    managed: bool = False
+    autostart: bool = False
+
+
 class SearchCompletion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: str = Field(min_length=48, max_length=48)
@@ -86,6 +92,13 @@ class SearchJobs:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS browser_worker (id INTEGER PRIMARY KEY, seen REAL)"
             )
+            worker_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(browser_worker)")
+            }
+            if "metadata" not in worker_columns:
+                db.execute(
+                    "ALTER TABLE browser_worker ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+                )
             columns = {row["name"] for row in db.execute("PRAGMA table_info(search_jobs)")}
             if "policy" not in columns:
                 db.execute("ALTER TABLE search_jobs ADD COLUMN policy TEXT")
@@ -180,12 +193,10 @@ class SearchJobs:
             ),
         )
 
-    def claim(self) -> dict | None:
+    def claim(self, heartbeat: WorkerHeartbeat | None = None) -> dict | None:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute(
-                "INSERT OR REPLACE INTO browser_worker (id,seen) VALUES (1,?)", (time.time(),)
-            )
+            self.record_heartbeat(db, heartbeat)
             self.expire(db)
             if db.execute("SELECT 1 FROM search_jobs WHERE status='running'").fetchone():
                 return None
@@ -298,16 +309,35 @@ class SearchJobs:
                 (result.status, time.time(), json.dumps(values), fingerprint, str(identifier)),
             )
 
+    @staticmethod
+    def record_heartbeat(db, heartbeat: WorkerHeartbeat | None = None):
+        if heartbeat is None:
+            db.execute(
+                "INSERT INTO browser_worker (id,seen) VALUES (1,?) "
+                "ON CONFLICT(id) DO UPDATE SET seen=excluded.seen",
+                (time.time(),),
+            )
+        else:
+            db.execute(
+                "INSERT INTO browser_worker (id,seen,metadata) VALUES (1,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET seen=excluded.seen,metadata=excluded.metadata",
+                (time.time(), heartbeat.model_dump_json()),
+            )
+
     def status(self) -> dict:
         with self.connection() as db:
             self.expire(db)
-            worker = db.execute("SELECT seen FROM browser_worker WHERE id=1").fetchone()
+            worker = db.execute("SELECT seen,metadata FROM browser_worker WHERE id=1").fetchone()
+            metadata = json.loads(worker["metadata"]) if worker else {}
             rows = db.execute(
                 "SELECT id,name,status,created,definition,result FROM search_jobs "
                 "ORDER BY created DESC LIMIT 10"
             ).fetchall()
             return {
                 "worker_online": bool(worker and time.time() - worker["seen"] < 45),
+                "worker_last_seen": worker["seen"] if worker else None,
+                "worker_managed": bool(metadata.get("managed")),
+                "worker_autostart": bool(metadata.get("autostart")),
                 "jobs": [
                     {
                         "id": row["id"],
@@ -351,15 +381,13 @@ def install_hosted_search(app: FastAPI, root: Path, config_dir: Path) -> None:
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/search/claim")
-    def claim():
-        return {"job": store.claim()}
+    def claim(payload: WorkerHeartbeat | None = None):
+        return {"job": store.claim(payload)}
 
     @app.post("/api/search/heartbeat")
-    def heartbeat():
+    def heartbeat(payload: WorkerHeartbeat | None = None):
         with store.connection() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO browser_worker (id,seen) VALUES (1,?)", (time.time(),)
-            )
+            store.record_heartbeat(db, payload)
         return {"ok": True}
 
     @app.post("/api/search/jobs/{identifier}/complete")
