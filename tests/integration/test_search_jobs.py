@@ -61,7 +61,7 @@ def test_worker_rejects_changed_campaign_and_limits(tmp_path, change):
     elif change == "daily":
         job["definition"]["limits"]["max_daily_results"] = 1
     else:
-        job["definition"]["limits"]["max_results"] = 26
+        job["definition"]["limits"]["max_results"] = 101
     with pytest.raises(ValueError):
         validate_job(job, Path("config"))
 

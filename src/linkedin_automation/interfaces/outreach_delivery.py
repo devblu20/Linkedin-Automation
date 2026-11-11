@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,12 +37,15 @@ class AuthorizeDelivery(BaseModel):
     draft_hash: str = Field(min_length=64, max_length=64)
     confirmed: bool
     include_follow_up: bool = False
+    reviewed_reply: bool = False
 
 
 class DeliveryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: str = Field(min_length=48, max_length=48)
-    outcome: str = Field(pattern="^(pending|connected|not_connected|message_sent|uncertain)$")
+    outcome: str = Field(
+        pattern="^(pending|connected|not_connected|message_sent|uncertain|not_sent)$"
+    )
     proof: str = Field(min_length=10, max_length=500)
 
 
@@ -55,6 +58,10 @@ class NotSentResolution(BaseModel):
 class DeliveryQueue:
     def __init__(self, path: Path, repository):
         self.path, self.repository = path, repository
+        from linkedin_automation.infrastructure.engagement_store import EngagementStore
+
+        self.engagement = EngagementStore(path.parent / "engagement.sqlite3")
+        self.reply_sync = None
         self.review = OutreachReview(repository)
         with self.db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS delivery_jobs (
@@ -72,7 +79,7 @@ class DeliveryQueue:
                 db.execute("BEGIN IMMEDIATE")
                 yield db
 
-    def prepare(self):
+    def prepare(self, *, guided=False):
         count = 0
         leads = {x.id: x for x in self.repository.list_leads()}
         already = {
@@ -94,7 +101,7 @@ class DeliveryQueue:
             )
             if (
                 record.status == OutreachStatus.READY_FOR_REVIEW
-                and os.getenv("AUTOMATIC_QUALIFICATION", "0") == "1"
+                and (guided or os.getenv("AUTOMATIC_QUALIFICATION", "0") == "1")
                 and lead.company
                 and lead.current_title
                 and definition.qualification
@@ -198,14 +205,21 @@ class DeliveryQueue:
                     "action": r["action"],
                     "status": r["status"],
                     "authorized": bool(r["authorized"]),
-                    "payload": json.loads(r["payload"]),
+                    "followup_hold": self.followup_hold(
+                        r["profile_url"], r["action"], json.loads(r["payload"])
+                    ),
+                    "payload": {
+                        k: v
+                        for k, v in json.loads(r["payload"]).items()
+                        if not k.startswith("cloud_")
+                    },
                     "result": json.loads(r["result"]) if r["result"] else None,
                     "draft_hash": draft_hash(json.loads(r["payload"])["draft"]),
                 }
                 for r in db.execute("SELECT * FROM delivery_jobs ORDER BY created DESC LIMIT 100")
             ]
 
-    def authorize(self, identifier, values):
+    def authorize(self, identifier, values, *, cloud_account=None, browser_sender=None):
         if not values.confirmed:
             raise ValueError(
                 "Confirm the named recipient and exact message before enabling delivery"
@@ -228,6 +242,36 @@ class DeliveryQueue:
             if draft_hash(actual) != values.draft_hash:
                 raise ValueError("Saved draft changed after queueing; cancel and prepare again")
             payload["follow_up_authorized"] = values.include_follow_up
+            payload.pop("reviewed_reply_signature", None)
+            if browser_sender:
+                if payload.get("cloud_account_id"):
+                    raise ValueError(
+                        "This draft belongs to the previous cloud sender. "
+                        "Cancel and prepare it again."
+                    )
+                payload["browser_sender_profile"] = browser_sender
+            if values.reviewed_reply:
+                account = "browser:" + browser_sender if browser_sender else None
+                if (
+                    row["action"] != "message"
+                    or not account
+                    or self.engagement.hold(row["profile_url"], account) != "Recipient replied"
+                ):
+                    raise ValueError(
+                        "Only a reviewed browser response to a non-opt-out reply is allowed."
+                    )
+                signature = self.engagement.reply_signature(row["profile_url"], account)
+                if not signature:
+                    raise ValueError("Sync the exact reply before reviewing a response.")
+                payload["reviewed_reply_signature"] = signature
+                payload["follow_up_authorized"] = False
+            if cloud_account:
+                if row["action"] == "connection" and not 1 <= len(actual) <= 300:
+                    raise ValueError(
+                        "Invitation note must contain 1-300 characters. Edit and review it first."
+                    )
+                payload["cloud_account_id"] = cloud_account["account_id"]
+                payload["cloud_member_id"] = cloud_account["member_id"]
             db.execute(
                 "UPDATE delivery_jobs SET authorized=1,payload=? WHERE id=?",
                 (json.dumps(payload), str(identifier)),
@@ -251,7 +295,22 @@ class DeliveryQueue:
                     replace(record, status=OutreachStatus.CONNECTED, updated_at=utc_now())
                 )
 
-    def claim(self):
+    def followup_hold(self, profile_url, action, payload):
+        if action != "message":
+            return None
+        sender = payload.get("browser_sender_profile")
+        account = "browser:" + sender if sender else payload.get("cloud_account_id")
+        hold = self.engagement.hold(profile_url, account)
+        if (
+            sender
+            and hold == "Recipient replied"
+            and payload.get("reviewed_reply_signature")
+            == self.engagement.reply_signature(profile_url, account)
+        ):
+            return None
+        return hold
+
+    def claim(self, *, cloud_account=None, browser_sender=None):
         with self.db() as db:
             db.execute(
                 "UPDATE delivery_jobs SET status='uncertain',result=? "
@@ -273,11 +332,44 @@ class DeliveryQueue:
                 return None
             if db.execute("SELECT 1 FROM delivery_jobs WHERE status='running'").fetchone():
                 return None
-            row = db.execute(
+            rows = db.execute(
                 "SELECT * FROM delivery_jobs WHERE status='queued' AND authorized=1 AND due<=? "
-                "ORDER BY created LIMIT 1",
+                "ORDER BY created",
                 (time.time(),),
-            ).fetchone()
+            ).fetchall()
+            row = next(
+                (
+                    r
+                    for r in rows
+                    if not self.followup_hold(
+                        r["profile_url"], r["action"], json.loads(r["payload"])
+                    )
+                    and (
+                        (
+                            browser_sender
+                            and json.loads(r["payload"]).get("browser_sender_profile")
+                            == browser_sender
+                            and not json.loads(r["payload"]).get("cloud_account_id")
+                        )
+                        or (
+                            not browser_sender
+                            and not cloud_account
+                            and not json.loads(r["payload"]).get("cloud_account_id")
+                            and not json.loads(r["payload"]).get("browser_sender_profile")
+                        )
+                        or (
+                            cloud_account
+                            and (
+                                json.loads(r["payload"]).get("cloud_account_id")
+                                == cloud_account["account_id"]
+                                and json.loads(r["payload"]).get("cloud_member_id")
+                                == cloud_account["member_id"]
+                            )
+                        )
+                    )
+                ),
+                None,
+            )
             if not row:
                 return None
             payload = json.loads(row["payload"])
@@ -344,20 +436,24 @@ class DeliveryQueue:
             ):
                 raise ValueError("Invalid delivery claim")
             allowed = {
-                "connection": {"pending", "connected", "uncertain"},
-                "check": {"connected", "not_connected", "uncertain"},
-                "message": {"message_sent", "uncertain"},
+                "connection": {"pending", "connected", "uncertain", "not_sent"},
+                "check": {"connected", "not_connected", "uncertain", "not_sent"},
+                "message": {"message_sent", "uncertain", "not_sent"},
             }[job["action"]]
             if result.outcome not in allowed:
                 raise ValueError("Outcome does not match the claimed action")
             payload = json.loads(job["payload"])
-            if result.outcome != "uncertain":
+            if result.outcome not in {"uncertain", "not_sent"}:
                 self._apply_confirmation(job, payload, result)
             db.execute(
                 "UPDATE delivery_jobs SET status=?,finished=?,result=?,completion_hash=?,"
                 "token=NULL WHERE id=?",
                 (
-                    "uncertain" if result.outcome == "uncertain" else "completed",
+                    "uncertain"
+                    if result.outcome == "uncertain"
+                    else "failed"
+                    if result.outcome == "not_sent"
+                    else "completed",
                     time.time(),
                     result.model_dump_json(exclude={"token"}),
                     signature,
@@ -432,7 +528,7 @@ class DeliveryQueue:
             ).fetchone()
             if (
                 not job
-                or job["status"] != "uncertain"
+                or job["status"] not in {"uncertain", "failed"}
                 or job["action"] not in {"connection", "message"}
             ):
                 raise ValueError("Only an unconfirmed sending action can be resolved as not sent")
@@ -539,22 +635,42 @@ def install_delivery(app, root, repository):
     app.state.delivery_queue = queue
 
     @app.get("/api/outreach/jobs")
-    def jobs():
+    def jobs(request: Request):
+        browser = getattr(app.state, "browser_engagement", None)
+        cloud = getattr(request.state, "website_cloud", False)
+        search = getattr(app.state, "search_store", None)
+        personal_browser = bool(browser and search and not cloud)
         return {
             "jobs": queue.list(),
             "sending_requires_authorization": True,
             "automatic_qualification": os.getenv("AUTOMATIC_QUALIFICATION", "0") == "1",
             "automatic_queue": os.getenv("AUTOMATIC_QUEUE", "0") == "1",
+            "execution": "cloud" if cloud else "desktop",
+            "cloud_sending_enabled": getattr(request.state, "cloud_sending_enabled", False),
+            "browser_sender": browser.current().removeprefix("browser:") if browser else None,
+            "local_sign_in_available": personal_browser,
+            "local_worker_online": search.status()["worker_online"] if personal_browser else None,
         }
 
     @app.post("/api/outreach/prepare")
-    def prepare():
-        return {"prepared": queue.prepare()}
+    def prepare(guided: bool = False):
+        return {"prepared": queue.prepare(guided=guided)}
 
     @app.post("/api/outreach/jobs/{identifier}/authorize")
-    def authorize(identifier: UUID, payload: AuthorizeDelivery):
+    def authorize(identifier: UUID, payload: AuthorizeDelivery, request: Request):
         try:
-            queue.authorize(identifier, payload)
+            account = getattr(request.state, "cloud_delivery_account", None)
+            if getattr(request.state, "website_cloud", False) and (
+                not account or not getattr(request.state, "cloud_sending_enabled", False)
+            ):
+                raise ValueError("Connect LinkedIn and enable cloud sending before authorizing.")
+            browser = getattr(app.state, "browser_engagement", None)
+            queue.authorize(
+                identifier,
+                payload,
+                cloud_account=account,
+                browser_sender=browser.current().removeprefix("browser:") if browser else None,
+            )
             return {"ok": True}
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
@@ -573,7 +689,11 @@ def install_delivery(app, root, repository):
             row = db.execute(
                 "SELECT * FROM delivery_jobs WHERE id=?", (str(identifier),)
             ).fetchone()
-            if not row or row["action"] != "check" or row["status"] not in {"queued", "uncertain"}:
+            if (
+                not row
+                or row["action"] != "check"
+                or row["status"] not in {"queued", "uncertain", "failed"}
+            ):
                 raise HTTPException(409, "No pending acceptance check")
             db.execute(
                 "UPDATE delivery_jobs SET due=?,status='queued',token=NULL WHERE id=?",
@@ -591,7 +711,12 @@ def install_delivery(app, root, repository):
 
     @app.post("/api/outreach/claim")
     def claim():
-        return {"job": queue.claim()}
+        browser = getattr(app.state, "browser_engagement", None)
+        return {
+            "job": queue.claim(
+                browser_sender=browser.current().removeprefix("browser:") if browser else None
+            )
+        }
 
     @app.post("/api/outreach/jobs/{identifier}/complete")
     def complete(identifier: UUID, payload: DeliveryResult):

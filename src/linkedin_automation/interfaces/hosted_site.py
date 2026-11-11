@@ -7,6 +7,7 @@ import binascii
 import json
 import os
 import secrets
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -32,16 +33,23 @@ _BROWSER_ACTIONS = {
 }
 
 
-def create_hosted_app() -> FastAPI:
+def create_hosted_app(
+    *,
+    data_root: Path | None = None,
+    access_credentials: tuple[str, str] | None = None,
+    worker_mode: str = "hosted",
+) -> FastAPI:
     """Fail closed without credentials and use only this service's volume database."""
-    username = os.environ.get("DASHBOARD_USERNAME", "").strip()
-    password = os.environ.get("DASHBOARD_PASSWORD", "")
+    username, password = access_credentials or (
+        os.environ.get("DASHBOARD_USERNAME", "").strip(),
+        os.environ.get("DASHBOARD_PASSWORD", ""),
+    )
     if not username or ":" in username or len(password) < 24:
         raise RuntimeError(
             "Set DASHBOARD_USERNAME and a DASHBOARD_PASSWORD of at least 24 characters"
         )
 
-    root = Path(os.environ.get("HOSTED_DATA_DIR", "/data")).resolve()
+    root = (data_root or Path(os.environ.get("HOSTED_DATA_DIR", "/data"))).resolve()
     public_origin = os.getenv("DASHBOARD_PUBLIC_ORIGIN", "").rstrip("/")
     if public_origin:
         parsed = urlsplit(public_origin)
@@ -57,19 +65,36 @@ def create_hosted_app() -> FastAPI:
             raise RuntimeError("DASHBOARD_PUBLIC_ORIGIN must be an HTTPS origin without a path")
     root.mkdir(parents=True, exist_ok=True)
     database = root / "research.sqlite3"
-    # Never inherit or connect to an existing application's database or browser profile.
-    os.environ["LINKEDIN_AUTOMATION_DATABASE_URL"] = f"sqlite:///{database.as_posix()}"
-    os.environ["LINKEDIN_AUTOMATION_ARTIFACT_DIR"] = str(root / "artifacts")
-    os.environ["LINKEDIN_AUTOMATION_BROWSER_DATA"] = str(root / "browser-data")
-    os.environ["LINKEDIN_AUTOMATION_SCREENSHOT_DIR"] = str(root / "screenshots")
-    app = create_review_app(database, review_only=True)
+    # Per-instance paths must not mutate process-wide environment in multi-user mode.
+    from linkedin_automation.infrastructure.runtime import RuntimeSettings
+
+    settings = replace(
+        RuntimeSettings.from_environment(),
+        database_path=database,
+        database_url=f"sqlite:///{database.as_posix()}",
+        artifact_dir=root / "artifacts",
+        browser_data_dir=root / "browser-data",
+        screenshot_dir=root / "screenshots",
+    )
+    app = create_review_app(database, review_only=True, runtime_settings=settings)
     from linkedin_automation.interfaces.search_jobs import install_hosted_search
 
-    install_hosted_search(app, root, Path("config"))
+    install_hosted_search(app, root, Path("config"), mode=worker_mode)
     from linkedin_automation.interfaces.outreach_delivery import install_delivery
 
     delivery_repository = DatabaseResearchRepository(database)
     delivery = install_delivery(app, root, delivery_repository)
+    from linkedin_automation.interfaces.engagement import install_engagement
+
+    install_engagement(app, delivery_repository, delivery.engagement)
+    if (
+        os.getenv("PERSONAL_BROWSER_MODE") == "1"
+        and os.getenv("WEBSITE_CLOUD_MODE") != "1"
+        and data_root is None
+    ):
+        from linkedin_automation.interfaces.browser_engagement import install_browser_engagement
+
+        install_browser_engagement(app, delivery, delivery_repository, delivery.engagement)
 
     @app.post("/api/import/runs")
     @app.post("/api/import/research")
@@ -190,12 +215,64 @@ def create_hosted_app() -> FastAPI:
             body = body[:start] + body[end:]
             from linkedin_automation.interfaces.search_ui import SEARCH_PANEL, SEARCH_SCRIPT
 
-            body = body.replace("<main>", "<main>" + SEARCH_PANEL, 1)
-            body = body.replace("</body>", SEARCH_SCRIPT + "</body>")
+            search_panel, search_script = SEARCH_PANEL, SEARCH_SCRIPT
+            from linkedin_automation.interfaces.public_discovery_ui import PANEL as PUBLIC_PANEL
+            from linkedin_automation.interfaces.public_discovery_ui import SCRIPT as PUBLIC_SCRIPT
+
+            search_panel += PUBLIC_PANEL
+            search_script += PUBLIC_SCRIPT
+            website_cloud = request.scope.get("state", {}).get("website_cloud", False)
+            if website_cloud:
+                from linkedin_automation.interfaces.website_cloud_ui import PANEL, SCRIPT
+                from linkedin_automation.interfaces.worker_controls import (
+                    WORKER_PANEL,
+                    WORKER_SCRIPT,
+                )
+
+                search_panel = PANEL + search_panel.replace(WORKER_PANEL, "")
+                search_script = search_script.replace(WORKER_SCRIPT, "") + SCRIPT
+            body = body.replace("<main>", "<main>" + search_panel, 1)
+            body = body.replace("</body>", search_script + "</body>")
             from linkedin_automation.interfaces.delivery_ui import DELIVERY_SCRIPT
 
             body = body.replace("</body>", DELIVERY_SCRIPT + "</body>")
+            from linkedin_automation.interfaces.engagement_ui import ENGAGEMENT_SCRIPT
+
+            body = body.replace("</body>", ENGAGEMENT_SCRIPT + "</body>")
             body = body.replace("Neon connected", "Hosted dashboard")
+            if request.scope.get("state", {}).get("website_admin"):
+                from linkedin_automation.interfaces.access_ui import ADMIN_PANEL, ADMIN_SCRIPT
+
+                admin_panel = ADMIN_PANEL
+                if website_cloud:
+                    admin_panel = admin_panel.replace(
+                        'For shared admin searches, '
+                        '<a href="/linkedin-automation/connect-computer">'
+                        "connect this computer</a>.",
+                        "Connect LinkedIn below for cloud research in the shared admin workspace.",
+                    )
+                if not request.scope.get("state", {}).get("device_required", False):
+                    admin_panel = admin_panel.replace(
+                        "For shared admin searches, "
+                        '<a href="/linkedin-automation/connect-computer">'
+                        "connect this computer</a>.",
+                        "Searches use the existing configured admin worker. "
+                        "Keep that computer awake and its worker running.",
+                    )
+                body = body.replace("<main>", "<main>" + admin_panel, 1)
+                body = body.replace("</body>", ADMIN_SCRIPT + "</body>")
+            if getattr(app.state, "website_user", None):
+                from linkedin_automation.interfaces.access_ui import ACCOUNT_PANEL, ACCOUNT_SCRIPT
+
+                body = body.replace("<main>", "<main>" + ACCOUNT_PANEL, 1)
+                body = body.replace("</body>", ACCOUNT_SCRIPT + "</body>")
+                body = body.replace("Hosted dashboard", "Private workspace")
+            if worker_mode == "cloud" and not website_cloud:
+                from linkedin_automation.interfaces.cloud_ui import ACCOUNT_PANEL, ACCOUNT_SCRIPT
+
+                body = body.replace("<main>", "<main>" + ACCOUNT_PANEL, 1)
+                body = body.replace("</body>", ACCOUNT_SCRIPT + "</body>")
+                body = body.replace("Hosted dashboard", "Private cloud workspace")
             body = body.replace(
                 "LinkedIn sending remains manual.",
                 "Automatic qualification. Review and enable queued drafts for delivery.",
@@ -262,7 +339,16 @@ return String(v??'').replace(/[&<>\"']/g,c=>entities[c]);
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(create_hosted_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    app = create_hosted_app()
+    if os.getenv("WEBSITE_AUTH_MODE") == "1":
+        from linkedin_automation.interfaces.access_gateway import create_access_gateway
+
+        app = create_access_gateway(app)
+    elif os.getenv("CLOUD_ACCOUNT_MODE") == "1":
+        from linkedin_automation.interfaces.cloud_gateway import create_cloud_gateway
+
+        app = create_cloud_gateway(app)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 
 
 if __name__ == "__main__":

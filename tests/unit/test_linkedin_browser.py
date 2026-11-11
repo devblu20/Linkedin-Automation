@@ -44,6 +44,19 @@ def test_plans_separate_round_robin_term_searches() -> None:
     definition = YamlSearchDefinitionLoader().load(
         Path("config/bluqq-london-prop-family-offices.yaml")
     )
+    # Optional titles retain the subject-only round-robin plan. Required titles are
+    # now included in discovery queries and covered by test_required_role_search.
+    definition = definition.model_copy(
+        update={
+            "search": definition.search.model_copy(
+                update={
+                    "required_dimensions": [
+                        x for x in definition.search.required_dimensions if x != "titles"
+                    ]
+                }
+            )
+        }
+    )
     steps = build_people_search_steps(definition)
     assert len(steps) == definition.limits.max_pages
     assert steps[:3] == [
@@ -61,6 +74,17 @@ def test_builds_single_term_search_url() -> None:
     url = build_people_search_url(definition, 1, search_term="family office")
     assert "keywords=family+office" in url
     assert "+OR+" not in url
+
+
+@pytest.mark.parametrize("location", ["United Kingdom", "UK"])
+def test_uk_campaign_applies_country_filter_to_people_search(location):
+    definition = YamlSearchDefinitionLoader().load(Path("config/bluqq-crm-recruitment.yaml"))
+    definition = definition.model_copy(
+        update={"search": definition.search.model_copy(update={"locations": [location]})}
+    )
+    query = parse_qs(urlsplit(build_people_search_url(definition, 1)).query)
+    assert query["geoUrn"] == ['["101165590"]']
+    assert definition.search.locations == [location]
 
 
 def test_optional_connection_filter_is_explicit_and_deduplicated() -> None:
@@ -210,3 +234,42 @@ def test_skips_anonymous_view_button_card_even_with_profile_link() -> None:
 )
 def test_detects_safety_states(url: str, title: str, html: str, expected: str | None) -> None:
     assert detect_safety_state(url=url, title=title, html=html) == expected
+
+
+@pytest.mark.parametrize(
+    "notice",
+    [
+        "You've reached the monthly limit for profile searches.",
+        "You&#39;ve reached the monthly limit for profile searches.",
+        "You have reached your commercial use limit.",
+    ],
+)
+def test_explicit_search_quota_is_distinct_from_network_visibility(notice):
+    from linkedin_automation.application.exceptions import SearchQuotaExceededError
+    from linkedin_automation.infrastructure.browser.linkedin import PlaywrightLinkedInCollector
+
+    html = "<main><p>" + notice + "</p><div>Named Person - Founder - London</div></main>"
+    assert (
+        detect_safety_state(
+            url="https://www.linkedin.com/search/results/people/", title="Search", html=html
+        )
+        == "search_quota"
+    )
+    with pytest.raises(SearchQuotaExceededError, match="monthly profile-search limit"):
+        PlaywrightLinkedInCollector._raise_for_safety_state(
+            "https://www.linkedin.com/search/results/people/", "Search", html
+        )
+
+
+def test_premium_ad_and_script_text_do_not_claim_exhausted_quota():
+    for html in (
+        "<main>You might benefit from unlimited search. Upgrade to Premium Business.</main>",
+        "<main>Named Person</main><script>"
+        '"reached the monthly limit for profile searches"</script>',
+    ):
+        assert (
+            detect_safety_state(
+                url="https://www.linkedin.com/search/results/people/", title="Search", html=html
+            )
+            is None
+        )

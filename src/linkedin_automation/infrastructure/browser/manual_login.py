@@ -14,6 +14,7 @@ from linkedin_automation.infrastructure.browser.linkedin import (
     detect_safety_state,
     read_page_snapshot,
 )
+from linkedin_automation.infrastructure.browser_hold import BrowserHold
 
 
 def authenticated_location(url: str, title: str, html: str) -> bool:
@@ -25,6 +26,27 @@ def authenticated_location(url: str, title: str, html: str) -> bool:
     )
 
 
+def wait_for_authenticated_page(page: Page, timeout_seconds: int) -> bool:
+    """Wait in the existing visible window for the user to finish sign-in."""
+    deadline = time.monotonic() + timeout_seconds
+    while not page.is_closed() and time.monotonic() < deadline:
+        try:
+            snapshot = read_page_snapshot(page, timeout_seconds=2)
+            if authenticated_location(*snapshot):
+                return True
+            if detect_safety_state(url=snapshot[0], title=snapshot[1], html=snapshot[2]) == (
+                "rate_limited"
+            ):
+                return False
+            page.wait_for_timeout(1000)
+        except CollectionError:
+            continue
+        except PlaywrightError:
+            if page.is_closed():
+                return False
+    return False
+
+
 def wait_for_manual_close(
     page: Page, timeout_seconds: int, on_verified: Callable[[], None]
 ) -> bool:
@@ -34,7 +56,12 @@ def wait_for_manual_close(
     while not page.is_closed() and time.monotonic() < deadline:
         try:
             snapshot = read_page_snapshot(page, timeout_seconds=2)
-            if not verified and authenticated_location(*snapshot):
+            authenticated = authenticated_location(*snapshot)
+            if verified and detect_safety_state(
+                url=snapshot[0], title=snapshot[1], html=snapshot[2]
+            ):
+                verified = False
+            if not verified and authenticated:
                 verified = True
                 on_verified()
             page.wait_for_timeout(1000)
@@ -63,6 +90,10 @@ def manual_login(
             # Keep the window available for manual navigation after a load error.
             with suppress(PlaywrightError):
                 page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
-            return wait_for_manual_close(page, timeout_seconds, on_verified)
+            verified = wait_for_manual_close(page, timeout_seconds, on_verified)
         finally:
             context.close()
+    # Release the browser profile before the worker is allowed to acquire it.
+    if verified:
+        BrowserHold(profile_dir).clear_after_manual_login()
+    return verified

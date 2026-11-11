@@ -234,6 +234,30 @@ Browser layouts and account permissions can affect delivery; login/security chec
 the account owner. Offline browser tests verify the adapter, but a live send requires a separate
 recipient/draft authorization and subsequent observation of the real LinkedIn outcome.
 
+## Google sign-in for the hosted dashboard
+
+Create a Web application OAuth client in Google Cloud and register the exact
+public redirect URI. For BluQQ, use
+`https://www.bluqq.com/linkedin-automation/api/auth/google/callback`.
+If the OAuth app is in testing mode, add the intended users in Google Cloud.
+
+Set these variables on the dashboard server. Store the client secret in your
+hosting provider's environment settings.
+
+```dotenv
+WEBSITE_AUTH_MODE=1
+AUTH_PUBLIC_ORIGIN=https://www.bluqq.com
+AUTH_EMAIL_ALLOWLIST=you@example.com
+AUTH_SIGNUP_MODE=disabled
+GOOGLE_LOGIN_CLIENT_ID=
+GOOGLE_LOGIN_CLIENT_SECRET=
+```
+
+The login and callback routes are in
+[`access_gateway.py`](src/linkedin_automation/interfaces/access_gateway.py).
+The Google token exchange and ID token validation are in
+[`access_auth.py`](src/linkedin_automation/infrastructure/access_auth.py).
+
 ## Database migrations
 
 The repository initializes the current schema for local use. Versioned Alembic migrations are

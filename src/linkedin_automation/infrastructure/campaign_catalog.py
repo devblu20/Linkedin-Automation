@@ -12,7 +12,9 @@ from linkedin_automation.application.campaigns import (
     definition_hash,
     spec_from_template,
 )
+from linkedin_automation.application.manual_templates import manual_definition
 from linkedin_automation.application.search_plan import build_people_search_steps
+from linkedin_automation.domain.search_definition import SearchDefinition
 
 
 class CampaignConflict(ValueError):
@@ -21,12 +23,42 @@ class CampaignConflict(ValueError):
 
 class CampaignCatalog:
     def __init__(self, path: Path, templates: dict):
-        self.path, self.templates = path, templates
+        self.path, self.bundled_templates = path, dict(templates)
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS campaigns (
                 id TEXT PRIMARY KEY, spec TEXT NOT NULL, template_hash TEXT NOT NULL,
                 revision INTEGER NOT NULL, updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS manual_campaign_templates (
+                id TEXT PRIMARY KEY, definition TEXT NOT NULL,
+                created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+
+    @property
+    def templates(self):
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT id,definition FROM manual_campaign_templates ORDER BY created,id"
+            )
+            custom = {
+                row["id"]: SearchDefinition.model_validate_json(row["definition"]) for row in rows
+            }
+        return {**custom, **self.bundled_templates}
+
+    def create_template(self, payload):
+        base = self.templates.get(payload.spec.template_id)
+        if base is None:
+            raise ValueError("Select an existing template as the starting point")
+        identifier = "custom-template-" + str(uuid4()) + ".yaml"
+        definition = manual_definition(base, payload, identifier)
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT COUNT(*) FROM manual_campaign_templates").fetchone()[0] >= 100:
+                raise ValueError("The workspace supports up to 100 manual templates")
+            db.execute(
+                "INSERT INTO manual_campaign_templates(id,definition) VALUES (?,?)",
+                (identifier, definition.model_dump_json()),
+            )
+        return identifier, definition
 
     @contextmanager
     def connection(self):
@@ -131,6 +163,9 @@ class CampaignCatalog:
                     "id": identifier,
                     "name": definition.name,
                     "revision": policy.revision if policy else 0,
+                    "controlled_test": bool(
+                        policy and policy.spec.template_id == "zz-controlled-queue-test.yaml"
+                    ),
                     "criteria": "Search: "
                     + (", ".join(search.keywords.include[:3]) or "Campaign criteria")
                     + " · Location: "
@@ -141,7 +176,7 @@ class CampaignCatalog:
                     "default_pages": policy.spec.page_limit
                     if policy
                     else min(3, definition.limits.max_pages),
-                    "profile_limit": min(25, definition.limits.max_results),
+                    "profile_limit": min(100, definition.limits.max_results),
                     "page_limit": min(5, definition.limits.max_pages),
                     "queries": [
                         {"term": term, "page": page}

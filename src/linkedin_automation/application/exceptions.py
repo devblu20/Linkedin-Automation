@@ -58,6 +58,10 @@ class RateLimitedError(CollectionError):
     """The source requested that collection stop."""
 
 
+class SearchQuotaExceededError(RateLimitedError):
+    """LinkedIn explicitly reported an exhausted people-search allowance."""
+
+
 class CollectionLimitError(CollectionError):
     """A configured local collection limit has been reached."""
 

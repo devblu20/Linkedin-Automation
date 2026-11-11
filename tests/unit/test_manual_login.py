@@ -39,3 +39,30 @@ def test_does_not_close_when_login_completes():
     assert wait_for_manual_close(cast(Page, page), 30, lambda: signals.append(True))
     assert signals == [True]
     assert page.waits == 3
+
+
+def test_later_restriction_invalidates_earlier_success():
+    class PageWithLaterRestriction:
+        waits = 0
+
+        @property
+        def url(self):
+            return (
+                "https://www.linkedin.com/feed/"
+                if self.waits == 0
+                else "https://www.linkedin.com/login/login-restriction/"
+            )
+
+        def is_closed(self):
+            return self.waits >= 2
+
+        def title(self):
+            return "Feed" if self.waits == 0 else "Restriction"
+
+        def content(self):
+            return "content"
+
+        def wait_for_timeout(self, delay):
+            self.waits += 1
+
+    assert not wait_for_manual_close(cast(Page, PageWithLaterRestriction()), 30, lambda: None)

@@ -33,6 +33,42 @@ def spec_payload():
     return {"spec": spec, "expected_revision": None}
 
 
+def test_crm_template_is_selectable_and_worker_keeps_its_non_trading_policy(editor_client):
+    identifier = "bluqq-crm-recruitment.yaml"
+    templates = editor_client.get("/api/campaign-templates").json()
+    crm = next(x for x in templates if x["id"] == identifier)
+    assert "recruitment" not in crm["spec"]["excluded_keywords"]
+    assert "trading" not in crm["spec"]["keywords"]
+    response = editor_client.post("/api/campaigns", json={"spec": crm["spec"]})
+    assert response.status_code == 201, response.text
+    saved = response.json()
+    queued = editor_client.post(
+        "/api/search/jobs", json={"campaign": saved["id"], "max_results": 1, "max_pages": 1}
+    )
+    assert queued.status_code == 200, queued.text
+    job = editor_client.post("/api/search/claim", json={}).json()["job"]
+    definition = validate_job(job, Path("config"))
+    assert definition.qualification.require_fund_evidence is False
+    assert "recruitment agency" in definition.qualification.firm_types
+    assert "independent trader" not in definition.qualification.firm_types
+    assert "customer relationships" in definition.outreach.message_template
+    assert "trading" not in definition.outreach.message_template
+    assert definition.outreach.manual_send_only is True
+    assert definition.qualification.minimum_score == 45
+
+
+def test_saved_campaign_template_cannot_silently_change(editor_client):
+    saved = editor_client.post("/api/campaigns", json=spec_payload()).json()
+    payload = spec_payload()
+    payload["expected_revision"] = saved["revision"]
+    payload["spec"]["template_id"] = "bluqq-crm-recruitment.yaml"
+    changed = editor_client.put("/api/campaigns/" + saved["id"], json=payload)
+    assert changed.status_code == 422
+    assert "new campaign" in changed.json()["detail"]
+    current = editor_client.get("/api/campaigns/" + saved["id"]).json()
+    assert current["spec"]["template_id"] == TEMPLATE
+
+
 def test_create_persist_edit_and_worker_uses_saved_rules(editor_client, tmp_path):
     before = Path("config", TEMPLATE).read_bytes()
     payload = spec_payload()
@@ -92,7 +128,7 @@ def test_builtin_edit_is_overlay_and_worker_accepts_it(editor_client):
     "field,value",
     [
         ("daily_limit", 500),
-        ("profile_limit", 26),
+        ("profile_limit", 101),
         ("page_limit", 6),
         ("template_id", "../private.yaml"),
     ],
@@ -101,6 +137,49 @@ def test_campaign_limits_and_template_validation(editor_client, field, value):
     payload = spec_payload()
     payload["spec"][field] = value
     assert editor_client.post("/api/campaigns", json=payload).status_code == 422
+
+
+def test_hundred_profile_campaign_reaches_worker_and_accepts_completion(editor_client):
+    payload = spec_payload()
+    payload["spec"].update(profile_limit=100, daily_limit=100, page_limit=5)
+    response = editor_client.post("/api/campaigns", json=payload)
+    assert response.status_code == 201, response.text
+    identifier = response.json()["id"]
+    option = next(
+        item
+        for item in editor_client.get("/api/search/settings").json()["campaigns"]
+        if item["id"] == identifier
+    )
+    assert option["profile_limit"] == 100
+    queued = editor_client.post(
+        "/api/search/jobs", json={"campaign": identifier, "max_results": 100, "max_pages": 5}
+    )
+    assert queued.status_code == 200, queued.text
+    job = editor_client.post("/api/search/claim", json={}).json()["job"]
+    definition = validate_job(job, Path("config"))
+    assert definition.limits.max_results == 100
+    assert definition.limits.max_daily_results == 100
+    template = configured_campaigns(Path("config"))[TEMPLATE]
+    assert definition.limits.max_daily_connections == template.limits.max_daily_connections
+    assert definition.limits.max_daily_messages == template.limits.max_daily_messages
+    completed = editor_client.post(
+        f"/api/search/jobs/{job['id']}/complete",
+        json={
+            "token": job["token"], "status": "completed", "observed": 100,
+            "accepted": 20, "rejected": 80, "pages_visited": 5,
+            "rejection_counts": {"Missing required keywords": 80},
+        },
+    )
+    assert completed.status_code == 200, completed.text
+
+
+def test_larger_request_still_respects_saved_campaign_limit(editor_client):
+    saved = editor_client.post("/api/campaigns", json=spec_payload()).json()
+    response = editor_client.post(
+        "/api/search/jobs", json={"campaign": saved["id"], "max_results": 100, "max_pages": 3}
+    )
+    assert response.status_code == 409
+    assert "exceeds this campaign" in response.json()["detail"]
 
 
 def test_required_empty_field_and_policy_injection_are_rejected(editor_client):

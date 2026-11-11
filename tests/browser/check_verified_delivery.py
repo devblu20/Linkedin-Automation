@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Locator
 from playwright.sync_api import sync_playwright as real_playwright
 
 from linkedin_automation.infrastructure.browser.delivery import VerifiedLinkedInDelivery
@@ -29,7 +31,16 @@ with tempfile.TemporaryDirectory() as directory, real_playwright() as p:
     def context(*args,**kwargs):
         value=browser.new_context()
         html=FIXTURE.replace("DEGREE",state["degree"]).replace("MAXIMUM",state["maximum"]).replace("CHATPROFILE",state["recipient"])
-        value.route("**/*",lambda route:route.fulfill(status=200,content_type="text/html",body=html))
+        if state.get("link"):
+            html=html.replace('<button onclick="document.getElementById(\'invite\').style.display=\'block\'">Connect</button>', '<a aria-label="Invite Example Person to connect" href="/preload/custom-invite/?vanityName=example" onclick="event.preventDefault();document.getElementById(\'invite\').style.display=\'block\'">Connect</a>')
+        modal_html=None
+        if state.get("frame"):
+            begin=html.index('<div role="dialog" id="invite"')
+            end=html.index('</div>',begin)+6
+            modal_html='<meta charset="utf-8">'+html[begin:end].replace("document.querySelector('section')", "parent.document.querySelector('section')")
+            html=html[:begin]+'<iframe id="modal" src="https://www.linkedin.com/modal-fixture" style="width:600px;height:400px"></iframe>'+html[end:]
+            html=html.replace("document.getElementById('invite').style.display='block'", "document.getElementById('modal').contentDocument.getElementById('invite').style.display='block'")
+        value.route("**/*",lambda route:route.fulfill(status=200,content_type="text/html",body=modal_html if modal_html and route.request.url.endswith('/modal-fixture') else html))
         return value
     @contextmanager
     def manager():
@@ -58,6 +69,19 @@ with tempfile.TemporaryDirectory() as directory, real_playwright() as p:
             raise AssertionError("An approved draft must not be truncated or silently changed")
         except ValueError as error:
             assert "character limit" in str(error)
+        state.update(degree="2nd",maximum="200",recipient="https://www.linkedin.com/in/example/",link=True)
+        assert adapter.execute(job)["outcome"]=="pending"
+        state["frame"]=True
+        assert adapter.execute(job)["outcome"]=="pending"
+        original_click=Locator.click
+        def detached_after_send(locator,*args,**kwargs):
+            is_send=locator.get_attribute("id")=="sendInvite"
+            result=original_click(locator,*args,**kwargs)
+            if is_send:
+                raise PlaywrightError("Frame detached after successful fixture submission")
+            return result
+        with patch.object(Locator,"click",detached_after_send):
+            assert adapter.execute(job)["outcome"]=="pending"
     browser.close()
     print("PASS: invitation pending proof, first-degree acceptance, exact message proof, recipient match and note limits")
 

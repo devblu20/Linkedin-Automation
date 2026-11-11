@@ -40,7 +40,7 @@ class CampaignSpec(BaseModel):
     connection_degrees: list[Literal["1st", "2nd", "3rd"]] = Field(
         default_factory=list, max_length=3
     )
-    profile_limit: int = Field(default=5, ge=1, le=25)
+    profile_limit: int = Field(default=5, ge=1, le=100)
     page_limit: int = Field(default=3, ge=1, le=5)
     daily_limit: int = Field(default=25, ge=1, le=500)
 

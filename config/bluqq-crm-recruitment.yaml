@@ -1,0 +1,42 @@
+version: 2
+name: CRM & Business Automation - Recruitment Agencies
+search:
+  titles:
+    include: [Founder, Co-Founder, Owner, CEO, Managing Director, Operations Director, Head of Operations]
+    exclude: [Student, Intern, Graduate Trainee]
+  locations: [London, Greater London]
+  industries: [Staffing and Recruiting, Recruitment]
+  companies: []
+  keywords:
+    include: [recruitment agency, staffing agency, recruitment consultancy, staffing, recruitment]
+    exclude: [seeking internship, looking for internship]
+  required_dimensions: [locations, keywords]
+limits:
+  max_results: 100
+  max_pages: 10
+  max_daily_results: 150
+  max_daily_connections: 20
+  max_daily_messages: 20
+qualification:
+  firm_types: [recruitment agency, staffing agency, recruitment consultancy, staffing, recruitment]
+  minimum_funds_gbp: 1
+  require_fund_evidence: false
+  company_size_min: 1
+  company_size_max: 1000
+  prefer_self_employed: false
+  self_employment_keywords: []
+  executive_title_priority: [Founder, Co-Founder, Owner, CEO, Managing Director, Operations Director, Head of Operations]
+  minimum_score: 45
+outreach:
+  enabled: true
+  manual_send_only: true
+  connection_template: >-
+    Hi {first_name}, I came across your work at {company}. BluQQ builds CRM and
+    business automation tools. Open to connecting?
+  message_template: >-
+    Thanks for connecting, {first_name}. BluQQ helps businesses manage customer
+    relationships and automate internal and external workflows, including lead
+    tracking, follow-ups and reporting. Are any of these areas a priority for your team?
+output:
+  file_name: bluqq-crm-recruitment.xlsx
+  drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID

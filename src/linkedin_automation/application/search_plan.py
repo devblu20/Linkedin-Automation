@@ -20,6 +20,22 @@ def build_people_search_steps(definition: SearchDefinition) -> list[tuple[str, i
         if term.casefold() not in seen:
             terms.append(term)
             seen.add(term.casefold())
+    if (
+        "titles" in search.required_dimensions
+        and search.titles.include
+        and not focused_roles
+        and (search.keywords.include or search.companies or search.industries)
+    ):
+        # Required roles should guide discovery as well as the final profile filter.
+        # One role/subject pair per query avoids a long list being treated as one phrase.
+        steps, counts = [], {}
+        for index in range(definition.limits.max_pages):
+            role = search.titles.include[index % len(search.titles.include)].replace('"', "")
+            subject = terms[index % len(terms)].replace('"', "")
+            query = f'"{role}" AND "{subject}"'
+            counts[query] = counts.get(query, 0) + 1
+            steps.append((query, counts[query]))
+        return steps
     return [
         (terms[index % len(terms)], (index // len(terms)) + 1)
         for index in range(definition.limits.max_pages)

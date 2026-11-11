@@ -39,15 +39,18 @@ def install_observation_routes(
     @app.get("/api/research/runs")
     def runs():
         items = [repository.get_run(scope)] if scope else repository.list_runs()
+        # Report history, preview and downloads all describe persisted observations.
+        # Older imported runs can have incomplete cached RunCounters.
+        counts = {item.id: repository.observation_counts(item.id) for item in items if item}
         return [
             {
                 "id": str(item.id),
                 "campaign": item.search_name,
                 "created_at": item.created_at,
                 "status": item.status.value,
-                "read": item.counters.observed,
-                "accepted": item.counters.accepted,
-                "rejected": item.counters.rejected,
+                "read": counts[item.id]["read"],
+                "accepted": counts[item.id]["accepted"],
+                "rejected": counts[item.id]["rejected"],
             }
             for item in items
             if item is not None
@@ -85,7 +88,12 @@ def install_observation_routes(
                 {
                     "id": str(item.id),
                     "run_id": str(item.run_id),
-                    "campaign": names[item.run_id],
+                    "campaign": names[item.run_id]
+                    + (
+                        " [Brave public web]"
+                        if item.candidate.source_search.startswith("Brave public web index:")
+                        else ""
+                    ),
                     "profile": profile,
                     "decision": "accepted" if item.accepted else "rejected",
                     "reasons": explain_rejection(item.rejection_reason),

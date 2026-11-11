@@ -1,0 +1,33 @@
+version: 2
+name: TEST ONLY - Controlled queue verification
+search:
+  keywords:
+    include: [controlled outreach test]
+    exclude: []
+  connection_degrees: [1st]
+  required_dimensions: [keywords]
+limits:
+  max_results: 2
+  max_pages: 1
+  max_daily_results: 2
+  max_daily_connections: 1
+  max_daily_messages: 1
+qualification:
+  # This is a human-approved test-contact category, not investor/firm qualification.
+  firm_types: [authorized test contact]
+  minimum_funds_gbp: 1
+  require_fund_evidence: false
+  minimum_score: 0
+  executive_title_priority: []
+  prefer_self_employed: false
+outreach:
+  enabled: true
+  manual_send_only: true
+  connection_template: >-
+    Hi {first_name}, this is a test connection request from BluQQ LinkedIn Automation.
+  message_template: >-
+    Hi {first_name}, this is an end-to-end campaign queue test from BluQQ LinkedIn Automation.
+    This message was sent after profile collection, review and delivery authorization.
+output:
+  file_name: controlled-queue-test.xlsx
+  drive_folder_id_env: GOOGLE_DRIVE_FOLDER_ID

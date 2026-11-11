@@ -47,7 +47,9 @@ def canonicalize_linkedin_profile_url(value: str) -> str:
 
 
 def _contains(text: str, value: str) -> bool:
-    return value.casefold() in text.casefold()
+    # Match complete terms: Intern must not match International, nor IT match equity.
+    phrase = re.escape(normalize_text(value)).replace(r"\ ", r"\s+")
+    return bool(phrase and re.search(r"(?<!\w)" + phrase + r"(?!\w)", text, re.IGNORECASE))
 
 
 def _matched_values(text: str, values: list[str], label: str) -> list[str]:
@@ -55,7 +57,7 @@ def _matched_values(text: str, values: list[str], label: str) -> list[str]:
 
 
 def evaluate_candidate(candidate: LeadCandidate, definition: SearchDefinition) -> MatchEvidence:
-    """Evaluate a candidate using conservative include/exclude substring rules."""
+    """Evaluate explicit profile evidence using whole-term include/exclude rules."""
     searchable = " ".join(
         (
             candidate.full_name,
@@ -67,8 +69,10 @@ def evaluate_candidate(candidate: LeadCandidate, definition: SearchDefinition) -
         )
     )
     criteria = definition.search
+    # Current structured role is stronger evidence than a headline mentioning other roles.
+    role_text = candidate.current_title or candidate.headline
     excluded = [
-        *_matched_values(searchable, criteria.titles.exclude, "title"),
+        *_matched_values(role_text, criteria.titles.exclude, "title"),
         *_matched_values(searchable, criteria.keywords.exclude, "keyword"),
     ]
     qualification = definition.qualification
@@ -80,13 +84,20 @@ def evaluate_candidate(candidate: LeadCandidate, definition: SearchDefinition) -
     ):
         excluded.append(f"company_size:over_{qualification.company_size_max}")
     matched = [
-        *_matched_values(searchable, criteria.titles.include, "title"),
+        *_matched_values(role_text, criteria.titles.include, "title"),
         *_matched_values(candidate.location, criteria.locations, "location"),
         *_matched_values(candidate.industry, criteria.industries, "industry"),
         *_matched_values(candidate.company, criteria.companies, "company"),
         *_matched_values(searchable, criteria.keywords.include, "keyword"),
     ]
-    matched_dimensions = {item.split(":", 1)[0] + "s" for item in matched}
+    dimensions = {
+        "title": "titles",
+        "location": "locations",
+        "industry": "industries",
+        "company": "companies",
+        "keyword": "keywords",
+    }
+    matched_dimensions = {dimensions[item.split(":", 1)[0]] for item in matched}
     missing_required = [
         dimension
         for dimension in criteria.required_dimensions
@@ -122,19 +133,18 @@ def qualification_assessment(
             "require_fund_evidence": False,
         }
     searchable = f"{lead.headline} {lead.current_title} {lead.company}".casefold()
-    title = next((x for x in policy.executive_title_priority if x.casefold() in searchable), "")
+    role_text = lead.current_title or lead.headline
+    title = next((x for x in policy.executive_title_priority if _contains(role_text, x)), "")
     title_points = max(5, 15 - policy.executive_title_priority.index(title)) if title else 0
     firm_match = firm_type.strip().casefold() in {x.casefold() for x in policy.firm_types}
-    location_match = any(
-        x.casefold() in lead.location.casefold() for x in definition.search.locations
-    )
+    location_match = any(_contains(lead.location, x) for x in definition.search.locations)
     size_match = (
         lead.company_size_max is not None
         and lead.company_size_max <= policy.company_size_max
         and (lead.company_size_min or 1) >= policy.company_size_min
     )
     self_match = lead.self_employed is True or any(
-        x.casefold() in searchable for x in policy.self_employment_keywords
+        _contains(searchable, x) for x in policy.self_employment_keywords
     )
     url = fund_evidence_url.strip()
     try:
@@ -216,7 +226,7 @@ def create_outreach_record(lead: Lead, definition: SearchDefinition) -> Outreach
         return OutreachRecord(lead_id=lead.id, run_id=lead.run_id)
     searchable = f"{lead.headline} {lead.current_title} {lead.company}".casefold()
     firm_type = next(
-        (value for value in qualification.firm_types if value.casefold() in searchable), ""
+        (value for value in qualification.firm_types if _contains(searchable, value)), ""
     )
     if (
         not firm_type
@@ -336,7 +346,7 @@ def process_candidate(
     inferred_self_employed = candidate.self_employed
     if inferred_self_employed is None and qualification is not None:
         inferred_self_employed = any(
-            keyword.casefold() in searchable for keyword in qualification.self_employment_keywords
+            _contains(searchable, keyword) for keyword in qualification.self_employment_keywords
         )
     return Lead(
         id=uuid4(),

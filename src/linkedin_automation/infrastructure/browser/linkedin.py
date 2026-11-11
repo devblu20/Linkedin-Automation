@@ -10,6 +10,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode, urljoin
@@ -25,6 +26,7 @@ from linkedin_automation.application.exceptions import (
     LayoutChangedError,
     LimitedVisibilityError,
     RateLimitedError,
+    SearchQuotaExceededError,
     SecurityChallengeError,
 )
 from linkedin_automation.application.search_plan import build_people_search_steps
@@ -39,6 +41,8 @@ from linkedin_automation.infrastructure.browser.checkpoint import BrowserCheckpo
 logger = logging.getLogger(__name__)
 _BASE_SEARCH_URL = "https://www.linkedin.com/search/results/people/"
 _LOCATION_GEO_URNS = {
+    "united kingdom": "101165590",
+    "uk": "101165590",
     "london": "102257491",
     "greater london": "102257491",
     "greater london area": "102257491",
@@ -129,6 +133,15 @@ def detect_safety_state(*, url: str, title: str, html: str) -> str | None:
     """Classify states that require the adapter to stop for user action."""
     combined = f"{url} {title} {html[:200_000]}".casefold()
     if (
+        "login-restriction" in url.casefold()
+        or any(
+            marker in title.casefold()
+            for marker in ("restriction", "security verification", "captcha")
+        )
+        or "access to your account has been temporarily restricted" in combined
+    ):
+        return "security_challenge"
+    if (
         any(marker in url.casefold() for marker in ("/login", "/authwall", "/uas/login"))
         or "sign in | linkedin" in combined
     ):
@@ -138,6 +151,17 @@ def detect_safety_state(*, url: str, title: str, html: str) -> str | None:
         term in title_text for term in ("security verification", "captcha")
     ):
         return "security_challenge"
+    visible = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
+    visible = " ".join(unescape(re.sub(r"<[^>]+>", " ", visible)).split()).casefold()
+    if any(
+        marker in visible
+        for marker in (
+            "reached the monthly limit for profile searches",
+            "reached your commercial use limit",
+            "reached the commercial use limit",
+        )
+    ):
+        return "search_quota"
     if any(term in combined for term in ("too many requests", "rate limit", "status code 429")):
         return "rate_limited"
     return None
@@ -302,6 +326,11 @@ def _visible_self_employed(text: str) -> bool | None:
     return True if any(value in lowered for value in values) else None
 
 
+def _profile_heading(value: str) -> str:
+    """Recognize a heading's optional visible count without altering stored section text."""
+    return re.sub(r"\s*\(\s*\d[\d,]*\s*\)\s*$", "", " ".join(value.split()).casefold())
+
+
 def _profile_section(
     snapshot: str, heading: str, next_headings: tuple[str, ...]
 ) -> tuple[str, ...]:
@@ -309,13 +338,21 @@ def _profile_section(
     lines = [" ".join(line.split()) for line in snapshot.splitlines() if line.strip()]
     try:
         start = (
-            next(index for index, line in enumerate(lines) if line.casefold() == heading.casefold())
+            next(
+                index
+                for index, line in enumerate(lines)
+                if _profile_heading(line) == heading.casefold()
+            )
             + 1
         )
     except StopIteration:
         return ()
     stop = next(
-        (index for index in range(start, len(lines)) if lines[index].casefold() in next_headings),
+        (
+            index
+            for index in range(start, len(lines))
+            if _profile_heading(lines[index]) in next_headings
+        ),
         min(len(lines), start + 30),
     )
     return tuple(dict.fromkeys(lines[start:stop]))
@@ -351,7 +388,7 @@ _PROFILE_BOUNDARIES = (
 def _profile_header_text(snapshot: str) -> str:
     lines = []
     for line in snapshot.splitlines():
-        label = " ".join(line.split()).casefold()
+        label = _profile_heading(line)
         if label in _PROFILE_BOUNDARIES or label.startswith("people who follow "):
             break
         lines.append(line)
@@ -780,7 +817,14 @@ class PlaywrightLinkedInCollector:
                                 continue
                             if candidates:
                                 logger.warning("linkedin_layout_changed_after_partial_results")
-                                break
+                                # This query supplied no readable profile links, but
+                                # later queries may still have accessible results.
+                                # Safety checks above must pass; never reload this
+                                # page or extend the caller's page/visit budget.
+                                last_page = step_number
+                                save_progress()
+                                time.sleep(random.uniform(self._min_delay, self._max_delay))
+                                continue
                             raise LayoutChangedError(
                                 "no recognizable people-search results were found; "
                                 "page layout may have changed"
@@ -854,6 +898,12 @@ class PlaywrightLinkedInCollector:
                             break
                         time.sleep(random.uniform(self._min_delay, self._max_delay))
                 except CollectionError as error:
+                    if isinstance(error, SearchQuotaExceededError):
+                        self._capture(page, step_number)
+                        if step_number not in progress.visited_steps:
+                            progress.visited_steps.add(step_number)
+                            pages_visited += 1
+                            save_progress()
                     error.checkpoint_page = last_page
                     error.pages_visited = pages_visited
                     error.hidden_result_cards = hidden_result_cards
@@ -911,6 +961,12 @@ class PlaywrightLinkedInCollector:
             raise SecurityChallengeError("LinkedIn security challenge requires user action")
         if state == "rate_limited":
             raise RateLimitedError("LinkedIn requested that collection stop")
+        if state == "search_quota":
+            raise SearchQuotaExceededError(
+                "LinkedIn says your monthly profile-search limit has been reached. "
+                "Collection stopped. Wait for LinkedIn to restore search access or "
+                "review the account notice. This is not a campaign rejection or worker failure."
+            )
 
 
 class PlaywrightLinkedInOutreach:

@@ -54,6 +54,7 @@ def create_review_app(
     enable_collection: bool = False,
     config_dir: Path | None = None,
     review_only: bool = False,
+    runtime_settings: RuntimeSettings | None = None,
 ) -> FastAPI:
     """Create a local review application for all leads or one research run."""
     repository = DatabaseResearchRepository(database_url)
@@ -61,7 +62,7 @@ def create_review_app(
     review = OutreachReview(
         repository, save_review=lambda record: repository.upsert_outreach(record, manual=True)
     )
-    settings = RuntimeSettings.from_environment()
+    settings = runtime_settings or RuntimeSettings.from_environment()
     reporter = ExcelReportWriter(settings.artifact_dir)
     outbound = OutboundOutreach(repository, PlaywrightLinkedInOutreach(settings.browser_data_dir))
 
@@ -163,11 +164,14 @@ def create_review_app(
             )
             html = html.replace("Changes are saved to Neon", "Changes are saved locally")
             html = html.replace("Client updated in Neon", "Client updated locally")
+        from linkedin_automation.interfaces.lead_review_filters import (
+            SCRIPT as REVIEW_FILTER_SCRIPT,
+        )
         from linkedin_automation.interfaces.manual_activity import MANUAL_ACTIVITY_SCRIPT
         from linkedin_automation.interfaces.workspace_navigation import install_workspace_navigation
 
         return install_workspace_navigation(html).replace(
-            "</body>", MANUAL_ACTIVITY_SCRIPT + "</body>"
+            "</body>", MANUAL_ACTIVITY_SCRIPT + REVIEW_FILTER_SCRIPT + "</body>"
         )
 
     @app.get("/api/leads")

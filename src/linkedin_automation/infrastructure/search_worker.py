@@ -22,6 +22,7 @@ from linkedin_automation.application.exceptions import (
     LayoutChangedError,
     LimitedVisibilityError,
     RateLimitedError,
+    SearchQuotaExceededError,
     SecurityChallengeError,
 )
 from linkedin_automation.application.research_transfer import export_research_transfer
@@ -29,6 +30,7 @@ from linkedin_automation.application.run_transfer import RunTransfer
 from linkedin_automation.application.workflow import ResearchWorkflow
 from linkedin_automation.domain.search_definition import SearchDefinition
 from linkedin_automation.infrastructure.browser import PlaywrightLinkedInCollector
+from linkedin_automation.infrastructure.browser_hold import BrowserHold
 from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 from linkedin_automation.infrastructure.persistence import DatabaseResearchRepository
 from linkedin_automation.infrastructure.reporting import ExcelReportWriter
@@ -66,10 +68,11 @@ class DashboardClient:
     def request(self, path: str, payload: dict | None = None) -> dict:
         if not path.startswith(("/api/search/", "/api/outreach/")):
             raise ValueError("Invalid worker endpoint")
-        if payload is None and path in {"/api/search/claim", "/api/search/heartbeat"}:
+        if path in {"/api/search/claim", "/api/search/heartbeat"}:
             payload = {
                 "managed": os.getenv("LINKEDIN_AUTOMATION_WORKER_MANAGED") == "1",
                 "autostart": os.getenv("LINKEDIN_AUTOMATION_WORKER_AUTOSTART") == "1",
+                **(payload or {}),
             }
         authorization = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
         request = Request(
@@ -137,11 +140,16 @@ class PendingCompletion:
         self.path.unlink()
 
 
-def validate_job(job: dict, config_dir: Path) -> SearchDefinition:
+def validate_job(
+    job: dict, config_dir: Path, *, trusted_template: SearchDefinition | None = None
+) -> SearchDefinition:
     UUID(job["id"])
     policy = CampaignPolicy.model_validate(job["policy"]) if job.get("policy") else None
     identifier = policy.spec.template_id if policy else job["campaign"]
     original = configured_campaigns(config_dir).get(identifier)
+    if original is None and identifier.startswith("custom-template-"):
+        UUID(identifier.removeprefix("custom-template-").removesuffix(".yaml"))
+        original = trusted_template
     if original is None or definition_hash(original) != job["base_hash"]:
         raise ValueError("Worker campaign configuration differs from the dashboard")
     if policy:
@@ -153,7 +161,7 @@ def validate_job(job: dict, config_dir: Path) -> SearchDefinition:
         raise ValueError("Worker only accepts changes to search limits")
     limits = requested.limits
     if not (
-        1 <= limits.max_results <= min(25, original.limits.max_results)
+        1 <= limits.max_results <= min(100, original.limits.max_results)
         and 1 <= limits.max_pages <= min(5, original.limits.max_pages)
     ):
         raise ValueError("Search exceeds worker limits")
@@ -167,6 +175,16 @@ def validate_job(job: dict, config_dir: Path) -> SearchDefinition:
 
 def checkpoint_path(client: DashboardClient, job: dict) -> Path:
     scope = sha256(f"{client.url}\n{client.username}".encode()).hexdigest()
+    if client.username.startswith("worker-"):
+        # Private workspaces already have a full UUID in their artifact root.
+        # Keep filenames short enough for Windows installations under Downloads;
+        # retain a 128-bit destination namespace plus the complete job UUID.
+        return (
+            RuntimeSettings.from_environment().artifact_dir
+            / "cp"
+            / scope[:32]
+            / (UUID(job.get("checkpoint_id") or job["id"]).hex + ".json")
+        )
     return (
         RuntimeSettings.from_environment().artifact_dir
         / "browser-checkpoints"
@@ -175,8 +193,27 @@ def checkpoint_path(client: DashboardClient, job: dict) -> Path:
     )
 
 
+def resolve_job_definition(
+    client: DashboardClient, job: dict, config_dir: Path
+) -> SearchDefinition:
+    identifier = (
+        job.get("policy", {}).get("spec", {}).get("template_id")
+        if job.get("policy")
+        else job["campaign"]
+    )
+    trusted_template = None
+    if identifier and identifier.startswith("custom-template-"):
+        # Retrieve separately through the existing authenticated HTTPS worker client.
+        # A job's own definition never becomes its trust anchor.
+        response = client.request("/api/search/template-definition", {"id": identifier})
+        if response.get("id") != identifier:
+            raise ValueError("The dashboard returned a different template")
+        trusted_template = SearchDefinition.model_validate(response["definition"])
+    return validate_job(job, config_dir, trusted_template=trusted_template)
+
+
 def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
-    definition = validate_job(job, config_dir)
+    definition = resolve_job_definition(client, job, config_dir)
     settings = RuntimeSettings.from_environment()
     checkpoint = checkpoint_path(client, job)
     if job.get("checkpoint_id", job["id"]) != job["id"] and not checkpoint.exists():
@@ -222,10 +259,21 @@ def execute_job(client: DashboardClient, job: dict, config_dir: Path) -> dict:
 def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False) -> None:
     print("Browser worker ready. Searches and explicitly authorized delivery only.", flush=True)
     pending = PendingCompletion(client)
+    hold = BrowserHold(RuntimeSettings.from_environment().browser_data_dir)
     while True:
         try:
             # Never launch another browser search while an earlier handoff is pending.
             pending.deliver(client)
+            if hold.active:
+                client.request("/api/search/heartbeat", {"linkedin_paused": True})
+                print(
+                    "LinkedIn tasks paused. Complete manual login/verification before resuming.",
+                    flush=True,
+                )
+                if once:
+                    return
+                time.sleep(30)
+                continue
             job = client.request("/api/search/claim")["job"]
             if job:
                 print(f"Running search job {job['id']}", flush=True)
@@ -241,15 +289,19 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                 try:
                     result = execute_job(client, job, config_dir)
                 except Exception as error:
-                    if isinstance(error, LimitedVisibilityError):
+                    if isinstance(error, SearchQuotaExceededError):
+                        message = str(error)
+                    elif isinstance(error, LimitedVisibilityError):
                         message = (
                             "LinkedIn hides these profiles outside your network. "
                             "Choose an accessible campaign or review account access."
                         )
                     elif isinstance(error, (AuthenticationRequiredError, SecurityChallengeError)):
+                        hold.pause()
                         message = (
-                            "LinkedIn sign-in or security verification is required. "
-                            "Complete manual login on the worker computer, then start a new search."
+                            "LinkedIn tasks paused: sign-in or security verification is required. "
+                            "Complete manual login on the worker computer before resuming. "
+                            "Restarting the worker does not clear this pause."
                         )
                     elif isinstance(error, BrowserClosedError):
                         message = (
@@ -257,6 +309,7 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                             "its browser open until collection finishes."
                         )
                     elif isinstance(error, RateLimitedError):
+                        hold.pause()
                         message = (
                             "LinkedIn requested a pause. Stop searching and review the "
                             "account notice before starting another search."
@@ -304,6 +357,12 @@ def run_worker(client: DashboardClient, config_dir: Path, *, once: bool = False)
                 )
 
                 run_authorized_delivery(client)
+                if os.getenv("PERSONAL_BROWSER_MODE") == "1" and not hold.active:
+                    from linkedin_automation.infrastructure.browser_reply_worker import (
+                        run_browser_reply_sync,
+                    )
+
+                    run_browser_reply_sync(client)
             if once:
                 return
         except (ValueError, KeyError, TimeoutError, OSError):

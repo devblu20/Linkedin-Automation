@@ -31,6 +31,11 @@ browser-data-*/
 screenshots/
 logs/
 data/
+outputs/
+downloads/*.zip
+DEPLOYMENT.json
+LIVE-VERIFICATION.txt
+WEBSITE-LOGIN.md
 
 # Editors and operating systems
 .idea/
@@ -48,4 +53,7 @@ Thumbs.db
 .sync-test-temp/
 .sync-test-temp-2/
 .navigation-test-temp/
+.cloud-tests/
+.cloud-full-tests/
+.auth-tests/
 .playwright-browsers/

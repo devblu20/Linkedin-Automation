@@ -4,10 +4,11 @@ import csv
 import io
 import re
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Literal
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -122,15 +123,7 @@ def report_response(headers, rows, dataset, file_format, filters):
 
 
 def install_report_exports(app: FastAPI, repository, scope: UUID | None):
-    @app.get("/api/exports/{dataset}.{file_format}")
-    def download(
-        dataset: Literal["leads", "observations"],
-        file_format: Literal["csv", "xlsx"],
-        run_id: UUID | None = None,
-        decision: Literal["all", "accepted", "rejected"] = "all",
-        status: OutreachStatus | None = None,
-        q: str = Query(default="", max_length=200),
-    ):
+    def selected_run(dataset, run_id, decision, status, q):
         if scope and run_id and scope != run_id:
             raise HTTPException(404, "Run is outside this review page")
         selected = scope or run_id
@@ -142,6 +135,120 @@ def install_report_exports(app: FastAPI, repository, scope: UUID | None):
             )
         if dataset == "leads" and decision != "all":
             raise HTTPException(422, "Use review status and search filters for saved leads")
+        return selected
+
+    def matches_lead(lead, record, status, q):
+        if status and (record is None or record.status != status):
+            return False
+        return (
+            q.casefold()
+            in " ".join(
+                (lead.full_name, lead.company, lead.current_title, lead.headline, lead.location)
+            ).casefold()
+        )
+
+    @app.get("/api/reports/analytics")
+    def report_analytics(request: Request, run_id: UUID | None = None):
+        from linkedin_automation.application.engagement import analytics
+
+        selected = selected_run("leads", run_id, "all", None, "")
+        # Local research-only pages have no synced inbox. Hosted workspaces reuse their
+        # existing engagement store, so the same metrics work without an AI API call.
+        store = getattr(app.state, "engagement", SimpleNamespace(history=lambda **_: []))
+        sender = (request.scope.get("state", {}).get("cloud_delivery_account") or {}).get(
+            "account_id"
+        )
+        return analytics(repository, store, selected, sender)
+
+    @app.get("/api/reports/preview")
+    def preview(
+        dataset: Literal["leads", "observations"] = "leads",
+        run_id: UUID | None = None,
+        decision: Literal["all", "accepted", "rejected"] = "all",
+        status: OutreachStatus | None = None,
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=10, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ):
+        selected = selected_run(dataset, run_id, decision, status, q)
+        if dataset == "leads":
+            outreach = {record.lead_id: record for record in repository.list_outreach(selected)}
+            matches = [
+                lead
+                for lead in repository.list_leads(selected)
+                if matches_lead(lead, outreach.get(lead.id), status, q)
+            ]
+            total = len(matches)
+            columns = [
+                ("name", "Lead"),
+                ("role", "Role"),
+                ("company", "Company"),
+                ("location", "Location"),
+                ("score", "Score"),
+                ("status", "Review status"),
+            ]
+            items = []
+            for lead in matches[offset : offset + limit]:
+                record = outreach.get(lead.id)
+                items.append(
+                    {
+                        "name": lead.full_name,
+                        "role": lead.current_title or lead.headline,
+                        "company": lead.company or "Unknown company",
+                        "location": lead.location or "Not collected",
+                        "score": f"{record.score}/100" if record else "—",
+                        "status": record.status.value if record else "unknown",
+                    }
+                )
+        else:
+            counts = repository.observation_counts(selected)
+            total = counts["read" if decision == "all" else decision]
+            records = repository.list_observations(
+                selected,
+                accepted=None if decision == "all" else decision == "accepted",
+                limit=limit,
+                offset=offset,
+            )
+            columns = [
+                ("name", "Profile"),
+                ("role", "Role"),
+                ("company", "Company"),
+                ("location", "Location"),
+                ("decision", "Decision"),
+                ("reason", "Reason"),
+            ]
+            items = [
+                {
+                    "name": item.candidate.full_name,
+                    "role": item.candidate.current_title or item.candidate.headline,
+                    "company": item.candidate.company or "Unknown company",
+                    "location": item.candidate.location or "Not collected",
+                    "decision": "accepted" if item.accepted else "rejected",
+                    "reason": "; ".join(explain_rejection(item.rejection_reason)) or "—",
+                }
+                for item in records
+            ]
+        return {
+            "dataset": dataset,
+            "run_id": str(selected) if selected else None,
+            "columns": [{"key": key, "label": title} for key, title in columns],
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
+        }
+
+    @app.get("/api/exports/{dataset}.{file_format}")
+    def download(
+        dataset: Literal["leads", "observations"],
+        file_format: Literal["csv", "xlsx"],
+        run_id: UUID | None = None,
+        decision: Literal["all", "accepted", "rejected"] = "all",
+        status: OutreachStatus | None = None,
+        q: str = Query(default="", max_length=200),
+    ):
+        selected = selected_run(dataset, run_id, decision, status, q)
         runs = {}
 
         def run(identifier):
@@ -166,6 +273,7 @@ def install_report_exports(app: FastAPI, repository, scope: UUID | None):
                 "Rejection reasons",
                 "Matched criteria",
                 "Collected at (UTC)",
+                "Research source",
             )
             rows = []
             for record in records:
@@ -186,6 +294,7 @@ def install_report_exports(app: FastAPI, repository, scope: UUID | None):
                         "; ".join(explain_rejection(record.rejection_reason)),
                         " | ".join(evidence.matched) if evidence else "",
                         record.candidate.collected_at.astimezone(UTC).isoformat(),
+                        record.candidate.source_search,
                     ]
                 )
         else:
@@ -207,23 +316,11 @@ def install_report_exports(app: FastAPI, repository, scope: UUID | None):
                 "Connection draft",
                 "Follow-up draft",
                 "Review updated at (UTC)",
+                "Research source",
             )
             for lead in records:
                 record = outreach.get(lead.id)
-                if status and (record is None or record.status != status):
-                    continue
-                if (
-                    q.casefold()
-                    not in " ".join(
-                        (
-                            lead.full_name,
-                            lead.company,
-                            lead.current_title,
-                            lead.headline,
-                            lead.location,
-                        )
-                    ).casefold()
-                ):
+                if not matches_lead(lead, record, status, q):
                     continue
                 if len(rows) >= MAX_EXPORT_ROWS:
                     raise HTTPException(413, "Too many rows. Narrow the filters before exporting.")
@@ -244,6 +341,7 @@ def install_report_exports(app: FastAPI, repository, scope: UUID | None):
                         record.connection_message if record else "",
                         record.follow_up_message if record else "",
                         record.updated_at.astimezone(UTC).isoformat() if record else "",
+                        lead.source_search,
                     ]
                 )
         return report_response(

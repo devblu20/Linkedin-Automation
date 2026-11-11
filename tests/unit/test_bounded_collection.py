@@ -163,6 +163,20 @@ def test_partial_results_continue_across_hidden_query_within_budget(monkeypatch,
     assert len(page.queries) == 3
 
 
+def test_unreadable_middle_query_does_not_end_the_remaining_plan(monkeypatch, tmp_path):
+    batch, page = collect(
+        monkeypatch,
+        tmp_path,
+        [([anchor("A")], 0), ([], 0), ([anchor("B")], 0), ([anchor("C")], 0)],
+        limit=100,
+    )
+    assert [candidate.full_name for candidate in batch.candidates] == ["A", "B", "C"]
+    assert batch.pages_visited == 4
+    assert len(page.queries) == 4
+    assert len(set(page.profile_visits)) == 3
+    assert batch.complete
+
+
 def test_all_hidden_results_stop_after_budget_with_no_fake_profiles(monkeypatch, tmp_path):
     with pytest.raises(LimitedVisibilityError) as stopped:
         collect(monkeypatch, tmp_path, [([], 10), ([], 10), ([], 10)])
@@ -177,6 +191,16 @@ def test_read_limit_stops_before_additional_queries(monkeypatch, tmp_path):
     )
     assert len(batch.candidates) == 2
     assert len(page.queries) == 1
+
+
+def test_hundred_profile_collection_stays_bounded_and_unique(monkeypatch, tmp_path):
+    pages = [
+        ([anchor(f"profile-{index}-{number}") for number in range(20)], 0) for index in range(5)
+    ]
+    batch, page = collect(monkeypatch, tmp_path, pages, limit=100)
+    assert len(batch.candidates) == 100
+    assert len(set(page.profile_visits)) == 100
+    assert len(page.queries) == 5
 
 
 @pytest.mark.parametrize(
@@ -225,3 +249,28 @@ def test_resume_preserves_profiles_and_never_revisits_reserved_attempts(monkeypa
     assert page.profile_visits == [] and page.queries == []
     with pytest.raises(ValueError, match="different campaign"):
         collect(monkeypatch, tmp_path, pages, limit=4, checkpoint=checkpoint)
+
+
+def test_explicit_monthly_quota_stops_before_any_more_searches_or_profile_visits(
+    monkeypatch, tmp_path
+):
+    from linkedin_automation.application.exceptions import SearchQuotaExceededError
+
+    navigations = []
+    original = SearchPage.goto
+
+    def navigate(self, url, **kwargs):
+        navigations.append(url)
+        return original(self, url, **kwargs)
+
+    monkeypatch.setattr(SearchPage, "goto", navigate)
+    monkeypatch.setattr(
+        SearchPage,
+        "content",
+        lambda self: "<main>You have reached the monthly limit for profile searches.</main>",
+    )
+    with pytest.raises(SearchQuotaExceededError) as stopped:
+        collect(monkeypatch, tmp_path, [([anchor("A")], 9), ([anchor("B")], 9), ([anchor("C")], 8)])
+    assert len(navigations) == 1
+    assert "/search/results/people/" in navigations[0]
+    assert stopped.value.pages_visited == 1

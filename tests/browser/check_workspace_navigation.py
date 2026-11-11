@@ -1,6 +1,5 @@
 """Opt-in real Chrome checks against a temporary hosted workspace; no production writes."""
 
-import csv
 import os
 import runpy
 import socket
@@ -150,12 +149,10 @@ def main():
                 page.get_by_role("link", name="▦ Reports").click()
                 expect(page.locator("#workspaceRunRows tr")).to_have_count(1)
                 page.get_by_label("Lead review status", exact=True).select_option("approved")
-                with page.expect_download() as download:
-                    page.get_by_role("button", name="Download leads CSV", exact=True).click()
-                output = root / "filtered.csv"
-                download.value.save_as(output)
-                with output.open(encoding="utf-8-sig", newline="") as report:
-                    assert list(csv.DictReader(report)) == []
+                expect(page.locator("#reportMatchCount")).to_have_text("0 matching leads")
+                expect(
+                    page.get_by_role("button", name="Download leads CSV", exact=True)
+                ).to_be_disabled()
                 page.get_by_label("Lead review status", exact=True).select_option("")
                 with page.expect_download() as download:
                     page.get_by_role("button", name="Download leads Excel", exact=True).click()

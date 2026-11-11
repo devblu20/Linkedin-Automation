@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from linkedin_automation.application.campaigns import CampaignPolicy, definition_hash
@@ -21,14 +21,16 @@ from linkedin_automation.infrastructure.config import YamlSearchDefinitionLoader
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     campaign: str = Field(min_length=1, max_length=150)
-    max_results: int = Field(default=5, ge=1, le=25)
+    max_results: int = Field(default=5, ge=1, le=100)
     max_pages: int = Field(default=3, ge=1, le=5)
+    profile_url: str | None = Field(default=None, max_length=2048)
 
 
 class WorkerHeartbeat(BaseModel):
     model_config = ConfigDict(extra="forbid")
     managed: bool = False
     autostart: bool = False
+    linkedin_paused: bool = False
 
 
 class SearchCompletion(BaseModel):
@@ -36,9 +38,9 @@ class SearchCompletion(BaseModel):
     token: str = Field(min_length=48, max_length=48)
     status: str = Field(pattern="^(completed|failed)$")
     run_id: UUID | None = None
-    observed: int = Field(default=0, ge=0, le=25)
-    accepted: int = Field(default=0, ge=0, le=25)
-    rejected: int = Field(default=0, ge=0, le=25)
+    observed: int = Field(default=0, ge=0, le=100)
+    accepted: int = Field(default=0, ge=0, le=100)
+    rejected: int = Field(default=0, ge=0, le=100)
     pages_visited: int = Field(default=0, ge=0, le=5)
     hidden_result_cards: int = Field(default=0, ge=0, le=1000)
     rejection_counts: dict[str, int] = Field(default_factory=dict, max_length=10)
@@ -106,6 +108,14 @@ class SearchJobs:
                 db.execute("ALTER TABLE search_jobs ADD COLUMN completion_hash TEXT")
             if "checkpoint_id" not in columns:
                 db.execute("ALTER TABLE search_jobs ADD COLUMN checkpoint_id TEXT")
+            if "worker_device" not in columns:
+                db.execute("ALTER TABLE search_jobs ADD COLUMN worker_device TEXT")
+            if "source_profile_url" not in columns:
+                db.execute("ALTER TABLE search_jobs ADD COLUMN source_profile_url TEXT")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS desktop_heartbeats "
+                "(device TEXT PRIMARY KEY,seen REAL,metadata TEXT)"
+            )
 
     @contextmanager
     def connection(self):
@@ -115,11 +125,25 @@ class SearchJobs:
                 yield db
 
     def enqueue(
-        self, payload: SearchRequest, campaigns: dict, *, policy: CampaignPolicy | None = None
+        self,
+        payload: SearchRequest,
+        campaigns: dict,
+        *,
+        policy: CampaignPolicy | None = None,
+        device: str | None = None,
     ) -> dict:
         original = campaigns.get(payload.campaign)
         if original is None:
             raise ValueError("Choose a configured campaign")
+        source_profile_url = None
+        if payload.profile_url:
+            if not policy or policy.spec.template_id != "zz-controlled-queue-test.yaml":
+                raise ValueError(
+                    "Known-profile lookup is available only for a saved controlled-test campaign"
+                )
+            from linkedin_automation.domain.services import canonicalize_linkedin_profile_url
+
+            source_profile_url = canonicalize_linkedin_profile_url(payload.profile_url)
         if (
             payload.max_results > original.limits.max_results
             or payload.max_pages > original.limits.max_pages
@@ -145,8 +169,9 @@ class SearchJobs:
                 raise ValueError("A search is already queued or running; wait for it to finish")
             db.execute(
                 "INSERT INTO search_jobs "
-                "(id,campaign,name,definition,base_hash,status,created,policy) "
-                "VALUES (?,?,?,?,?,'queued',?,?)",
+                "(id,campaign,name,definition,base_hash,status,created,policy,"
+                "worker_device,source_profile_url) "
+                "VALUES (?,?,?,?,?,'queued',?,?,?,?)",
                 (
                     identifier,
                     payload.campaign,
@@ -155,6 +180,8 @@ class SearchJobs:
                     policy.template_hash if policy else definition_hash(original),
                     time.time(),
                     policy.model_dump_json() if policy else None,
+                    device,
+                    source_profile_url,
                 ),
             )
         return {
@@ -193,10 +220,10 @@ class SearchJobs:
             ),
         )
 
-    def claim(self, heartbeat: WorkerHeartbeat | None = None) -> dict | None:
+    def claim(self, heartbeat: WorkerHeartbeat | None = None, *, device=None) -> dict | None:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            self.record_heartbeat(db, heartbeat)
+            self.record_heartbeat(db, heartbeat, device=device)
             self.expire(db)
             if db.execute("SELECT 1 FROM search_jobs WHERE status='running'").fetchone():
                 return None
@@ -208,7 +235,9 @@ class SearchJobs:
             ):
                 return None
             row = db.execute(
-                "SELECT * FROM search_jobs WHERE status='queued' ORDER BY created LIMIT 1"
+                "SELECT * FROM search_jobs WHERE status='queued' AND worker_device IS ? "
+                "ORDER BY created LIMIT 1",
+                (device,),
             ).fetchone()
             if row is None:
                 return None
@@ -225,15 +254,17 @@ class SearchJobs:
                 "token": token,
                 "policy": json.loads(row["policy"]) if row["policy"] else None,
                 "checkpoint_id": row["checkpoint_id"] or row["id"],
+                "source_profile_url": row["source_profile_url"],
             }
 
-    def resume(self, identifier: UUID) -> dict:
+    def resume(self, identifier: UUID, *, device=None) -> dict:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             self.expire(db)
             row = db.execute("SELECT * FROM search_jobs WHERE id=?", (str(identifier),)).fetchone()
             if (
                 row is None
+                or row["worker_device"] != device
                 or row["status"] != "failed"
                 or not json.loads(row["result"] or "{}").get("resume_available")
             ):
@@ -251,8 +282,9 @@ class SearchJobs:
             )
             db.execute(
                 "INSERT INTO search_jobs "
-                "(id,campaign,name,definition,base_hash,status,created,policy,checkpoint_id) "
-                "VALUES (?,?,?,?,?,'queued',?,?,?)",
+                "(id,campaign,name,definition,base_hash,status,created,policy,"
+                "checkpoint_id,worker_device,source_profile_url) "
+                "VALUES (?,?,?,?,?,'queued',?,?,?,?,?)",
                 (
                     new_id,
                     row["campaign"],
@@ -262,6 +294,8 @@ class SearchJobs:
                     time.time(),
                     row["policy"],
                     row["checkpoint_id"] or row["id"],
+                    device,
+                    row["source_profile_url"],
                 ),
             )
             limits = json.loads(row["definition"])["limits"]
@@ -298,7 +332,7 @@ class SearchJobs:
                 or result.accepted + result.rejected > result.observed
                 or result.pages_visited > limits["max_pages"]
                 or any(
-                    len(key) > 80 or value < 0 or value > 25
+                    len(key) > 80 or value < 0 or value > limits["max_results"]
                     for key, value in result.rejection_counts.items()
                 )
             ):
@@ -310,7 +344,14 @@ class SearchJobs:
             )
 
     @staticmethod
-    def record_heartbeat(db, heartbeat: WorkerHeartbeat | None = None):
+    def record_heartbeat(db, heartbeat: WorkerHeartbeat | None = None, *, device=None):
+        if device:
+            db.execute(
+                "INSERT INTO desktop_heartbeats VALUES (?,?,?) ON CONFLICT(device) "
+                "DO UPDATE SET seen=excluded.seen,metadata=excluded.metadata",
+                (device, time.time(), (heartbeat or WorkerHeartbeat()).model_dump_json()),
+            )
+            return
         if heartbeat is None:
             db.execute(
                 "INSERT INTO browser_worker (id,seen) VALUES (1,?) "
@@ -324,17 +365,27 @@ class SearchJobs:
                 (time.time(), heartbeat.model_dump_json()),
             )
 
-    def status(self) -> dict:
+    def status(self, *, device=None) -> dict:
         with self.connection() as db:
             self.expire(db)
-            worker = db.execute("SELECT seen,metadata FROM browser_worker WHERE id=1").fetchone()
+            worker = (
+                db.execute(
+                    "SELECT seen,metadata FROM desktop_heartbeats WHERE device=?", (device,)
+                ).fetchone()
+                if device
+                else db.execute("SELECT seen,metadata FROM browser_worker WHERE id=1").fetchone()
+            )
             metadata = json.loads(worker["metadata"]) if worker else {}
             rows = db.execute(
                 "SELECT id,name,status,created,definition,result FROM search_jobs "
-                "ORDER BY created DESC LIMIT 10"
+                "WHERE worker_device IS ? ORDER BY created DESC LIMIT 10",
+                (device,),
             ).fetchall()
+            fresh = bool(worker and time.time() - worker["seen"] < 45)
+            paused = fresh and bool(metadata.get("linkedin_paused"))
             return {
-                "worker_online": bool(worker and time.time() - worker["seen"] < 45),
+                "worker_online": fresh and not paused,
+                "worker_linkedin_paused": paused,
                 "worker_last_seen": worker["seen"] if worker else None,
                 "worker_managed": bool(metadata.get("managed")),
                 "worker_autostart": bool(metadata.get("autostart")),
@@ -355,52 +406,85 @@ class SearchJobs:
             }
 
 
-def install_hosted_search(app: FastAPI, root: Path, config_dir: Path) -> None:
+def install_hosted_search(app: FastAPI, root: Path, config_dir: Path, *, mode="hosted") -> None:
     store = SearchJobs(root / "search-jobs.sqlite3")
     catalog = CampaignCatalog(root / "campaigns.sqlite3", configured_campaigns(config_dir))
+    app.state.search_store, app.state.campaign_catalog = store, catalog
     from linkedin_automation.interfaces.campaign_editor import install_campaign_routes
 
     install_campaign_routes(app, catalog)
+    from linkedin_automation.interfaces.public_discovery import install_public_discovery
+
+    install_public_discovery(app, root, catalog)
 
     @app.get("/api/search/settings")
-    def settings():
+    def settings(request: Request):
+        device = getattr(request.state, "worker_device", None)
+        required = getattr(request.state, "device_required", False)
+        status = store.status(device=device)
+        if required and not device:
+            status.update(
+                worker_online=False, worker_linkedin_paused=False,
+                worker_managed=False, worker_autostart=False, jobs=[]
+            )
         return {
-            "mode": "hosted",
+            "mode": "cloud" if getattr(request.state, "website_cloud", False) else mode,
             "campaigns": catalog.options(),
-            **store.status(),
+            **status,
+            "device_required": required,
+            "device_paired": bool(device),
+            "cloud_connected": getattr(request.state, "cloud_connected", False),
         }
 
     @app.post("/api/search/jobs")
-    def enqueue(payload: SearchRequest):
+    def enqueue(payload: SearchRequest, request: Request):
+        if payload.profile_url and not getattr(request.state, "website_cloud", False):
+            raise HTTPException(409, "Known-profile tests require cloud mode.")
+        device = getattr(request.state, "worker_device", None)
+        if getattr(request.state, "device_required", False) and not device:
+            raise HTTPException(
+                409, "Connect this computer first. No search was queued on another PC."
+            )
         try:
             definition, policy = catalog.resolve(payload.campaign)
-            return store.enqueue(payload, {payload.campaign: definition}, policy=policy)
+            return store.enqueue(
+                payload, {payload.campaign: definition}, policy=policy, device=device
+            )
         except KeyError:
             raise HTTPException(422, "Choose a saved campaign") from None
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/search/claim")
-    def claim(payload: WorkerHeartbeat | None = None):
-        return {"job": store.claim(payload)}
+    def claim(request: Request, payload: WorkerHeartbeat | None = None):
+        return {"job": store.claim(payload, device=getattr(request.state, "worker_device", None))}
 
     @app.post("/api/search/heartbeat")
-    def heartbeat(payload: WorkerHeartbeat | None = None):
+    def heartbeat(request: Request, payload: WorkerHeartbeat | None = None):
         with store.connection() as db:
-            store.record_heartbeat(db, payload)
+            store.record_heartbeat(
+                db, payload, device=getattr(request.state, "worker_device", None)
+            )
         return {"ok": True}
 
     @app.post("/api/search/jobs/{identifier}/complete")
-    def complete(identifier: UUID, payload: SearchCompletion):
+    def complete(identifier: UUID, payload: SearchCompletion, request: Request):
         try:
+            device = getattr(request.state, "worker_device", None)
+            with store.connection() as db:
+                row = db.execute(
+                    "SELECT worker_device FROM search_jobs WHERE id=?", (str(identifier),)
+                ).fetchone()
+            if row and row["worker_device"] != device:
+                raise ValueError("Search belongs to a different computer")
             store.complete(identifier, payload)
             return {"ok": True}
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/search/jobs/{identifier}/resume")
-    def resume(identifier: UUID):
+    def resume(identifier: UUID, request: Request):
         try:
-            return store.resume(identifier)
+            return store.resume(identifier, device=getattr(request.state, "worker_device", None))
         except ValueError as error:
             raise HTTPException(409, str(error)) from error

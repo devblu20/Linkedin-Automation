@@ -496,7 +496,9 @@ class DatabaseResearchRepository:
                 or 0
             )
             current.observed = int(observed or total)
-            current.accepted = int(total)
+            # Review-only prospects may be saved despite incomplete campaign
+            # evidence. Research counters still describe observation decisions.
+            current.accepted = int(observed - rejected) if observed else int(total)
             current.rejected = int(rejected)
             current.updated_at = run.updated_at
         return inserted, skipped
@@ -537,6 +539,82 @@ class DatabaseResearchRepository:
                     )
                 )
             return result
+
+    def enrich_public_review_missing(self, fresh_rows) -> int:
+        """Fill missing public-index fields only; never approve or rewrite human review."""
+        from dataclasses import replace
+
+        from linkedin_automation.domain.services import qualification_assessment
+
+        changed = 0
+        keys = (
+            "current_title",
+            "company",
+            "location",
+            "industry",
+            "about",
+            "experience",
+            "education",
+            "skills",
+            "connections",
+            "followers",
+        )
+        with Session(self._engine) as session, session.begin():
+            for fresh, _ in fresh_rows:
+                profile = session.get(LeadRow, str(fresh.id))
+                record = session.get(OutreachRow, str(fresh.id))
+                if (
+                    not profile
+                    or not record
+                    or record.status != "needs_verification"
+                    or record.fund_evidence_notes
+                    or not profile.source_search.startswith("Brave public web index:")
+                ):
+                    continue
+                if session.scalar(
+                    select(ManualActivityRow.id)
+                    .where(ManualActivityRow.lead_id == str(fresh.id))
+                    .limit(1)
+                ):
+                    continue
+                original = _lead_from_row(profile)
+                updates = {
+                    key: getattr(fresh, key)
+                    for key in keys
+                    if not getattr(original, key) and getattr(fresh, key)
+                }
+                # Repair this parser's known footer-overrun bug only on untouched
+                # public records, without replacing a human-supplied location.
+                if (
+                    fresh.location
+                    and original.location.startswith(fresh.location)
+                    and "profile on LinkedIn" in original.location
+                ):
+                    updates["location"] = fresh.location
+                if not updates:
+                    continue
+                updated = replace(
+                    original,
+                    **updates,
+                    profile_snapshot=(
+                        original.profile_snapshot
+                        + "\nSupplemental public evidence:\n"
+                        + fresh.profile_snapshot[:12000]
+                    ),
+                )
+                self._copy_lead(profile, updated)
+                definition = SearchDefinition.model_validate_json(
+                    session.get(RunRow, profile.run_id).definition_json
+                )
+                record.score = qualification_assessment(
+                    updated,
+                    definition,
+                    firm_type=record.firm_type,
+                    funds_gbp=record.funds_gbp,
+                    fund_evidence_url=record.fund_evidence_url,
+                )["score"]
+                changed += 1
+        return changed
 
     def enrich_unreviewed_profiles(self, fresh_rows) -> int:
         """Refresh unreviewed facts from a newer read, preserving original observations."""

@@ -17,6 +17,42 @@ def subject():
     )
 
 
+def test_numbered_section_headings_do_not_mix_education_certifications_and_skills():
+    text = """Example Person
+CEO & co-founder of Example Labs
+London
+About (1)
+I build IT consulting tools.
+Experience (2)
+Founder
+Example Labs · Full-time
+Jan 2024 - Present
+Education (1)
+Example University
+Licenses & certifications (12)
+Example certificate
+Skills (11)
+Software development
+Languages (6)
+English
+"""
+    result = enrich_visible_profile_text(text, subject())
+    assert result.about == "I build IT consulting tools."
+    assert result.education == ("Example University",)
+    assert result.skills == ("Software development",)
+    assert result.current_title == "Founder"
+    assert "Example certificate" not in result.experience
+
+
+def test_section_like_body_text_is_not_misidentified_as_a_heading():
+    result = enrich_visible_profile_text(
+        "Example Person\nLondon\nAbout\nSkills (including Python)\n"
+        "I offer IT consulting.\nExperience\nFounder\nExample Labs",
+        subject(),
+    )
+    assert result.about == "Skills (including Python) I offer IT consulting."
+
+
 def test_sections_exclude_featured_activity_suggestions_and_footer():
     text = """Example Person
 CEO & co-founder of Example Labs

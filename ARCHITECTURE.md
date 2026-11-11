@@ -1,5 +1,13 @@
 # LinkedIn Lead Research Automation — Architecture
 
+> Current hosted extension (2026-10-30): the initial-scope statements below describe the
+> original CLI release. The existing authenticated cloud workspace and supervised Unipile
+> delivery remain intact. Optional AI drafts, advisory incoming-reply classification,
+> record-based analytics, and reviewed follow-up suggestions are documented in
+> [AI-ENHANCEMENTS.md](AI-ENHANCEMENTS.md). Replies add a separate follow-up hold; they do not
+> replace connection statuses or authorize AI replies. New modules depend on existing domain
+> records and provider transport, with workspace-local additive storage.
+
 ## 1. Document Status
 
 - Status: Initial single-user implementation completed

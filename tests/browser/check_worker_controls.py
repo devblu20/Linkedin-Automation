@@ -5,7 +5,6 @@ import socket
 import tempfile
 import threading
 import time
-from pathlib import Path
 
 import uvicorn
 from playwright.sync_api import expect, sync_playwright
@@ -58,19 +57,26 @@ def main():
                 assert (
                     page.request.post(
                         origin + "/linkedin-automation/api/search/heartbeat",
+                        data={"managed": True, "autostart": True, "linkedin_paused": True},
+                    ).status
+                    == 200
+                )
+                page.get_by_role("button", name="Refresh worker status", exact=True).click()
+                expect(page.locator("#startWorker")).to_have_text("Worker running")
+                expect(page.locator("#workerStatus")).to_contain_text("LinkedIn jobs are paused")
+                assert (
+                    page.request.post(
+                        origin + "/linkedin-automation/api/search/heartbeat",
                         data={"managed": True, "autostart": True},
                     ).status
                     == 200
                 )
                 page.get_by_role("button", name="Refresh worker status", exact=True).click()
-                expect(page.locator("#workerManagement")).to_contain_text("Automatic restart on")
-                expect(page.locator("#workerManagement")).to_contain_text("Windows sign-in")
+                expect(page.locator("#startWorker")).to_have_text("Worker online")
                 expect(page.locator("#workerStatus")).to_contain_text("online")
                 state = page.request.get(origin + "/linkedin-automation/api/search/settings").json()
                 assert state["jobs"] == [], "Worker controls must not create a search"
                 assert not errors, errors
-                Path("screenshots").mkdir(exist_ok=True)
-                page.screenshot(path="screenshots/worker-controls-local.png", full_page=True)
                 browser.close()
                 print(
                     "PASS: worker controls, offline/managed status, "

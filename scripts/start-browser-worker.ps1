@@ -30,8 +30,7 @@ if (Test-Path -LiteralPath $taskPythonW -PathType Leaf) { $PythonPath = $taskPyt
 $taskExisting = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" |
     Where-Object { $_.CommandLine -and $_.CommandLine.Contains($taskLauncher) }
 if ($taskExisting) {
-    Write-Output 'The LinkedIn worker helper is already running; it will keep the worker available.'
-    return
+    Write-Output 'Checking installed private workers; existing helpers keep their current jobs.'
 }
 $taskLogs = Join-Path $taskRoot 'data\worker-logs'
 New-Item -ItemType Directory -Path $taskLogs -Force | Out-Null
@@ -40,7 +39,7 @@ $taskOutput = Join-Path $taskLogs "$taskStamp.out.log"
 $taskError = Join-Path $taskLogs "$taskStamp.err.log"
 $taskEnv = @{
     LINKEDIN_AUTOMATION_DASHBOARD_URL = $DashboardUrl.TrimEnd('/')
-    LINKEDIN_AUTOMATION_DASHBOARD_CREDENTIALS_FILE = $taskCredentials
+    LINKEDIN_AUTOMATION_DASHBOARD_CREDENTIALS_FILE = if ($CredentialsFile -eq '.env.railway.local') { $null } else { $taskCredentials }
 }
 $taskPrevious = @{}
 try {
